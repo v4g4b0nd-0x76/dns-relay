@@ -16,7 +16,7 @@ Required capability: `CAP_NET_BIND_SERVICE` (bind port 53 without full root).
 sudo useradd --system --home /opt/dns-relay --shell /usr/sbin/nologin dns-relay || true
 sudo mkdir -p /opt/dns-relay
 sudo cp target/*/release/dns-relay /opt/dns-relay/dns-relay
-sudo mkdir /opt/dns-relay/logs 
+sudo mkdir /opt/dns-relay/logs
 # or native path:
 # sudo cp target/release/dns-relay /opt/dns-relay/dns-relay
 sudo cp conf.toml /opt/dns-relay/

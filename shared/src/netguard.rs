@@ -45,8 +45,6 @@ mod platform {
     use super::*;
     use std::{collections::HashSet, process::Stdio, sync::OnceLock};
     use tokio::{io::AsyncWriteExt, sync::Mutex as TokioMutex};
-    use tracing::debug;
-
     /// Network services we've overridden DNS on, plus whether we've set a
     /// scutil State: override (and for which service id) — needed to revert
     /// exactly what we changed, nothing more.
@@ -70,9 +68,8 @@ mod platform {
         let vpn_now = detect_vpn_interface().await?;
         let vpn_was = is_vpn_active.swap(vpn_now, Relaxed);
 
-        if vpn_now && !vpn_was {
-            info!("[NETGUARD] VPN interface detected");
-        } else if !vpn_now && vpn_was {
+        let vpn_started = vpn_now && !vpn_was;
+        if !vpn_now && vpn_was {
             info!("[NETGUARD] VPN interface no longer detected — reverting DNS overrides");
             revert().await;
             return Ok(());
@@ -87,25 +84,31 @@ mod platform {
             if let Err(e) = force_primary_dns_state(&primary_id, dns_target).await {
                 warn!("[NETGUARD] failed to force primary State DNS: {e}");
             } else {
-                debug!("[NETGUARD] forced State:/Network/Service/{primary_id}/DNS");
                 touched().await.lock().await.scutil_service_id = Some(primary_id);
             }
         }
 
-        reassert_dns_on_all_services(dns_target).await
+        let services_reasserted = reassert_dns_on_all_services(dns_target).await?;
+        if vpn_started || services_reasserted > 0 {
+            info!(
+                "[NETGUARD] VPN active; local DNS {} enforced on {} service(s)",
+                dns_target, services_reasserted
+            );
+        }
+        Ok(())
     }
 
     /// Undoes every override we've applied: clears the scutil State:
     /// override and resets each touched service back to automatic (DHCP) DNS.
     pub async fn revert() {
         let mut state = touched().await.lock().await;
+        let state_override = state.scutil_service_id.take();
+        let mut changed = state_override.is_some();
 
-        if let Some(service_id) = state.scutil_service_id.take() {
+        if let Some(service_id) = state_override {
             let script = format!("remove State:/Network/Service/{service_id}/DNS\n");
             if let Err(e) = run_scutil_script(&script).await {
                 warn!("[NETGUARD] failed to remove scutil State override: {e}");
-            } else {
-                info!("[NETGUARD] removed scutil State:/Network/Service/{service_id}/DNS override");
             }
         }
 
@@ -115,15 +118,16 @@ mod platform {
                 .output()
                 .await;
             match result {
-                Ok(out) if out.status.success() => {
-                    info!("[NETGUARD] {service}: DNS reverted to automatic (DHCP)");
-                }
+                Ok(out) if out.status.success() => changed = true,
                 Ok(out) => warn!(
                     "[NETGUARD] {service}: revert failed: {}",
                     String::from_utf8_lossy(&out.stderr)
                 ),
                 Err(err) => warn!("[NETGUARD] {service}: failed to run networksetup revert: {err}"),
             }
+        }
+        if changed {
+            info!("[NETGUARD] DNS overrides reverted");
         }
     }
 
@@ -161,7 +165,7 @@ mod platform {
         Ok(false)
     }
 
-    async fn reassert_dns_on_all_services(dns_target: &str) -> Result<(), String> {
+    async fn reassert_dns_on_all_services(dns_target: &str) -> Result<usize, String> {
         let list_output = Command::new("networksetup")
             .arg("-listallnetworkservices")
             .output()
@@ -173,18 +177,19 @@ mod platform {
         }
 
         let text = String::from_utf8_lossy(&list_output.stdout);
+        let mut reasserted = 0;
         for line in text.lines().skip(1) {
             let service = line.trim();
             if service.is_empty() || service.starts_with('*') {
                 continue;
             }
-            reassert_dns_on_service(service, dns_target).await;
+            reasserted += usize::from(reassert_dns_on_service(service, dns_target).await);
         }
 
-        Ok(())
+        Ok(reasserted)
     }
 
-    async fn reassert_dns_on_service(service: &str, dns_target: &str) {
+    async fn reassert_dns_on_service(service: &str, dns_target: &str) -> bool {
         let current = Command::new("networksetup")
             .args(["-getdnsservers", service])
             .output()
@@ -199,17 +204,9 @@ mod platform {
         };
 
         if already_correct {
-            debug!("[NETGUARD] {service}: DNS already {dns_target}, skipping");
-            touched()
-                .await
-                .lock()
-                .await
-                .services
-                .insert(service.to_string());
-            return;
+            return false;
         }
 
-        debug!("[NETGUARD] {service}: reasserting DNS -> {dns_target}");
         let result = Command::new("networksetup")
             .args(["-setdnsservers", service, dns_target])
             .output()
@@ -217,22 +214,24 @@ mod platform {
 
         match result {
             Ok(out) if out.status.success() => {
-                info!("[NETGUARD] {service}: DNS reasserted to {dns_target}");
                 touched()
                     .await
                     .lock()
                     .await
                     .services
                     .insert(service.to_string());
+                true
             }
             Ok(out) => {
                 warn!(
                     "[NETGUARD] {service}: setdnsservers failed: {}",
                     String::from_utf8_lossy(&out.stderr)
                 );
+                false
             }
             Err(err) => {
                 warn!("[NETGUARD] {service}: failed to run networksetup: {err}");
+                false
             }
         }
     }
