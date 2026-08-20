@@ -1,15 +1,14 @@
 use crate::ResponseCache;
-use crate::cache::remove_domains_from_cache;
 use crate::errors::Error;
 use serde::Deserialize;
-use shared::domain_trie::DomainTrie;
+use shared::domain_trie::{DomainTrie, referenced_rule_files};
 use shared::metric_wrapper::MetricConf;
 use std::sync::Arc;
 use std::time::SystemTime;
 use std::{path::PathBuf, sync::RwLock};
 use tokio::time::{Duration, interval};
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, Clone)]
 pub struct Conf {
     #[serde(default = "default_dns_target")]
     pub dns_target: String,
@@ -138,6 +137,7 @@ pub async fn watch_conf_and_reload(
     let mut tick = interval(poll_interval);
     let mut last_mtime: Option<SystemTime> =
         std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let mut list_mtimes = rule_file_mtimes(&conf.read().unwrap());
 
     loop {
         tick.tick().await;
@@ -149,22 +149,46 @@ pub async fn watch_conf_and_reload(
                 continue;
             }
         };
-        if Some(mtime) == last_mtime {
+        let config_changed = Some(mtime) != last_mtime;
+        let current_list_mtimes = rule_file_mtimes(&conf.read().unwrap());
+        let lists_changed = current_list_mtimes != list_mtimes;
+        if !config_changed && !lists_changed {
             continue;
         }
         last_mtime = Some(mtime);
 
-        match load_conf(&path) {
+        let new_conf = if config_changed {
+            load_conf(&path)
+        } else {
+            Ok(conf.read().unwrap().clone())
+        };
+        match new_conf {
             Ok(new_conf) => {
-                let drop_list_clone = new_conf.drop_list.clone();
                 let new_trie = DomainTrie::build(&new_conf.drop_list, &new_conf.redirect_list);
                 rule_trie.store(Arc::new(new_trie));
-                remove_domains_from_cache(&cache, &drop_list_clone);
+                // A list edit can add, remove, or redirect a name. Clearing a
+                // bounded in-memory cache is cheap and prevents stale policy.
+                if let Ok(mut guard) = cache.lock() {
+                    guard.clear();
+                }
+                list_mtimes = rule_file_mtimes(&new_conf);
                 *conf.write().unwrap() = new_conf;
 
-                info!("config reloaded successfully");
+                info!(config_changed, lists_changed, "rules reloaded successfully");
             }
             Err(err) => error!("failed to reload conf.toml, keeping old config: {}", err),
         }
     }
+}
+
+fn rule_file_mtimes(conf: &Conf) -> Vec<(std::path::PathBuf, Option<SystemTime>)> {
+    let mut files: Vec<_> = referenced_rule_files(&conf.drop_list, &conf.redirect_list)
+        .into_iter()
+        .map(|path| {
+            let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            (path, mtime)
+        })
+        .collect();
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
 }

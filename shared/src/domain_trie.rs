@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum DomainTriePolicy {
@@ -12,6 +15,11 @@ pub enum DomainTriePolicy {
 pub struct DomainTrie {
     children: HashMap<String, DomainTrie>,
     policy: DomainTriePolicy,
+    // The common `*.example.com` form is represented by the trie itself.
+    // Keep the small number of label-glob rules (for example
+    // `ad-*.doubleclick.net`) separate, so ordinary list lookups stay O(labels)
+    // rather than scanning every rule.
+    label_globs: Vec<(String, DomainTriePolicy)>,
 }
 
 impl DomainTrie {
@@ -25,6 +33,10 @@ impl DomainTrie {
     /// thing mutated, since `self` is still the trie root at this point.
     fn insert_with_policy(&mut self, pattern: &str, policy: DomainTriePolicy) {
         let pattern = pattern.trim_end_matches('.').to_lowercase();
+        if pattern.contains('*') && !is_suffix_wildcard(&pattern) {
+            self.label_globs.push((pattern, policy));
+            return;
+        }
         let pattern = pattern.strip_prefix("*.").unwrap_or(&pattern);
 
         let mut node = self;
@@ -58,16 +70,7 @@ impl DomainTrie {
 
         let read_list_file = |path: &str| -> Vec<String> {
             match std::fs::read_to_string(path) {
-                Ok(content) => content
-                    .lines()
-                    .filter_map(|raw_line| {
-                        let line = raw_line.trim();
-                        if line.is_empty() || line.starts_with('#') {
-                            return None;
-                        }
-                        line.split_whitespace().next().map(str::to_string)
-                    })
-                    .collect(),
+                Ok(content) => content.lines().filter_map(parse_blocklist_line).collect(),
                 Err(err) => {
                     tracing::error!("failed to read list file {}: {}", path, err);
                     Vec::new()
@@ -75,6 +78,7 @@ impl DomainTrie {
             }
         };
 
+        let mut seen_drop_patterns = HashSet::new();
         for entry in drop_list {
             let pattern = entry.trim();
             if pattern.is_empty() || pattern.starts_with('#') {
@@ -83,10 +87,12 @@ impl DomainTrie {
             if is_file_reference(pattern) {
                 let lines = read_list_file(pattern);
                 tracing::info!("loaded {} drop entries from {}", lines.len(), pattern);
-                for domain in &lines {
-                    trie.insert_drop(domain);
+                for domain in lines {
+                    if seen_drop_patterns.insert(domain.clone()) {
+                        trie.insert_drop(&domain);
+                    }
                 }
-            } else {
+            } else if seen_drop_patterns.insert(pattern.to_string()) {
                 trie.insert_drop(pattern);
             }
         }
@@ -133,11 +139,146 @@ impl DomainTrie {
                     }
                     node = next;
                 }
-                None => return &DomainTriePolicy::None,
+                None => break,
             }
         }
-        &DomainTriePolicy::None
+        self.label_globs
+            .iter()
+            .find(|(pattern, _)| label_glob_matches(&domain, pattern))
+            .map(|(_, policy)| policy)
+            .unwrap_or(&DomainTriePolicy::None)
     }
+}
+
+fn is_suffix_wildcard(pattern: &str) -> bool {
+    pattern.starts_with("*.") && !pattern[2..].contains('*')
+}
+
+fn label_glob_matches(domain: &str, pattern: &str) -> bool {
+    let domain_labels: Vec<_> = domain.split('.').collect();
+    let pattern_labels: Vec<_> = pattern.split('.').collect();
+    domain_labels.len() == pattern_labels.len()
+        && domain_labels
+            .iter()
+            .zip(pattern_labels)
+            .all(|(domain_label, pattern_label)| wildcard_matches(domain_label, pattern_label))
+}
+
+fn wildcard_matches(value: &str, pattern: &str) -> bool {
+    let value = value.as_bytes();
+    let pattern = pattern.as_bytes();
+    let (mut value_index, mut pattern_index) = (0usize, 0usize);
+    let (mut star_index, mut restart_value) = (None, 0usize);
+
+    while value_index < value.len() {
+        if pattern_index < pattern.len() && pattern[pattern_index] == value[value_index] {
+            value_index += 1;
+            pattern_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            star_index = Some(pattern_index);
+            pattern_index += 1;
+            restart_value = value_index;
+        } else if let Some(star) = star_index {
+            pattern_index = star + 1;
+            restart_value += 1;
+            value_index = restart_value;
+        } else {
+            return false;
+        }
+    }
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+    pattern_index == pattern.len()
+}
+
+/// Returns the external files referenced by rule entries.  Keeping this in
+/// the rule module lets configuration watchers reload a list when the list is
+/// edited, not only when conf.toml itself changes.
+pub fn referenced_rule_files(
+    drop_list: &[String],
+    redirect_list: &[(String, String)],
+) -> Vec<PathBuf> {
+    let mut files = HashSet::new();
+    for entry in drop_list {
+        let entry = entry.trim();
+        if is_file_reference(entry) {
+            files.insert(PathBuf::from(entry));
+        }
+    }
+    for (entry, _) in redirect_list {
+        let entry = entry.trim();
+        if is_file_reference(entry) {
+            files.insert(PathBuf::from(entry));
+        }
+    }
+    files.into_iter().collect()
+}
+
+fn is_file_reference(pattern: &str) -> bool {
+    pattern.starts_with('/') || pattern.starts_with("./") || pattern.starts_with("../")
+}
+
+/// Accept the common plain-domain, hosts, and Adblock Plus list forms.  A
+/// list can therefore be placed directly in `drop_list` without an expensive
+/// conversion step.  DNSMasq `server=/.../` files are deliberately ignored:
+/// they describe forwarding rules, not blocks.
+fn parse_blocklist_line(raw_line: &str) -> Option<String> {
+    let line = raw_line.trim().trim_end_matches('\r');
+    if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
+        return None;
+    }
+
+    let candidate = if let Some(rest) = line.strip_prefix("||") {
+        rest.split(['^', '$', '/']).next()?
+    } else if let Some(rest) = line.strip_prefix("address=/") {
+        rest.split('/').next()?
+    } else if line.starts_with("server=/") {
+        return None;
+    } else if let Some(rest) = line.strip_prefix("local-zone:") {
+        // Unbound entries look like: local-zone: "example.com" static
+        if !(rest.contains("always_nxdomain")
+            || rest.contains("static")
+            || rest.contains("redirect"))
+        {
+            return None;
+        }
+        rest.split('"').nth(1)?
+    } else {
+        let mut parts = line.split_whitespace();
+        let first = parts.next()?;
+        if first.parse::<std::net::IpAddr>().is_ok() {
+            parts.next()?
+        } else {
+            first
+        }
+    };
+
+    let candidate = candidate
+        .trim()
+        .trim_end_matches('.')
+        .strip_prefix("*.")
+        .unwrap_or(candidate.trim().trim_end_matches('.'));
+    if is_dns_name(candidate) {
+        Some(candidate.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn is_dns_name(name: &str) -> bool {
+    // Blocklists are public DNS lists, not local search domains. Requiring a
+    // dot excludes headings such as "blocked" while still accepting normal
+    // domain names and underscore service records.
+    name.len() <= 253
+        && name.contains('.')
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        })
 }
 pub enum RuleMatch {
     Drop,

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.dns-hijacker</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/dns-hijacker/dns-hijacker</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/opt/dns-hijacker</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/var/log/dns-hijacker.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/dns-hijacker.err.log</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<!-- Port 53 requires root on macOS; LaunchDaemons run as root by default. -->
+</dict>
+</plist>

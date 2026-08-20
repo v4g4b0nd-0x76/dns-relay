@@ -5,6 +5,11 @@ use tokio::net::UdpSocket;
 #[inline(always)]
 pub fn parse_domain(payload: &[u8], mut offset: usize) -> Option<(String, usize)> {
     let mut domain = String::new();
+    // A compressed name can point elsewhere in the packet.  Keep the offset
+    // immediately after the first pointer for the caller, while following
+    // pointers iteratively to avoid unbounded recursion on malformed packets.
+    let mut end_offset = None;
+    let mut pointer_hops = 0usize;
     loop {
         if offset >= payload.len() {
             return None;
@@ -15,15 +20,30 @@ pub fn parse_domain(payload: &[u8], mut offset: usize) -> Option<(String, usize)
                 return None;
             }
             let pointer_offset = ((len & 0x3F) << 8) | (payload[offset + 1] as usize);
-            if let Some((sub_domain, _)) = parse_domain(payload, pointer_offset) {
-                domain.push_str(&sub_domain);
+            pointer_hops += 1;
+            // RFC 1035 permits a packet to contain at most 128 labels.  This
+            // cap also rejects pointer loops without burning stack or CPU.
+            if pointer_hops > 128 || pointer_offset >= payload.len() {
+                return None;
             }
-            offset += 2;
-            break;
+            if end_offset.is_none() {
+                end_offset = Some(offset + 2);
+            }
+            offset = pointer_offset;
+            continue;
+        }
+        // The two high bits 01/10 are reserved label encodings that this DNS
+        // relay does not support. Treat them as malformed instead of using the
+        // low six bits as a normal label length.
+        if len & 0xC0 != 0 {
+            return None;
         }
         offset += 1;
         if len == 0 {
             break;
+        }
+        if len > 63 {
+            return None;
         }
 
         if offset + len > payload.len() {
@@ -37,7 +57,7 @@ pub fn parse_domain(payload: &[u8], mut offset: usize) -> Option<(String, usize)
         domain.push_str(&label.to_lowercase());
         offset += len;
     }
-    Some((domain, offset))
+    Some((domain, end_offset.unwrap_or(offset)))
 }
 
 #[inline(always)]

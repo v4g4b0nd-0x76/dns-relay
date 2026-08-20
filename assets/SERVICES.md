@@ -52,23 +52,17 @@ journalctl -u dns-relay -f
 Port 53 requires a root LaunchDaemon on macOS.
 
 ```bash
-./scripts/build.sh mac
-sudo mkdir -p /opt/dns-relay
-sudo cp target/aarch64-apple-darwin/release/dns-relay /opt/dns-relay/
-sudo cp conf.toml /opt/dns-relay/
-sudo cp assets/com.dns-relay.plist /Library/LaunchDaemons/
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.dns-relay.plist
-sudo launchctl enable system/com.dns-relay
-sudo launchctl kickstart -k system/com.dns-relay
+cargo build --profile release-perf -p dns_relay
+sudo scripts/install_macos.sh
 ```
 
 Stop / unload:
 
 ```bash
-sudo launchctl bootout system/com.dns-relay
+sudo launchctl bootout system/com.dns-hijacker
 ```
 
-Logs: `/var/log/dns-relay.out.log` and `/var/log/dns-relay.err.log`.
+Logs: `/var/log/dns-hijacker.out.log` and `/var/log/dns-hijacker.err.log`.
 
 ## Point the OS at the local resolver
 

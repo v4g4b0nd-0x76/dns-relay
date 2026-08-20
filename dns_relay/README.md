@@ -35,7 +35,7 @@ sudo setcap cap_net_bind_service=+ep PATH_TO_BINARY
 
 ## Running as a service
 
-There are systemd (Linux) and launchd (macOS) setup notes in `assets/SERVICES.md`, with unit files at `assets/dns_relay.service` and `assets/com.dns-relay.plist`.
+There are systemd (Linux) and launchd (macOS) setup notes in `assets/SERVICES.md`, with unit files at `assets/dns_relay.service` and `assets/com.dns-hijacker.plist`.
 
 ## Config format
 

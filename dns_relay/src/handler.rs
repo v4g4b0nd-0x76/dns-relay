@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    cache::{ResponseCache, cache_key_from_query, cache_lookup, cache_store},
+    cache::{ResponseCache, cache_key_from_query_for_client, cache_lookup, cache_store},
     conf::RecordHisotryConf,
     dns::{
         craft_nxdomain_response, craft_redirect_response, parse_a_records, parse_domain, with_txid,
@@ -29,7 +29,7 @@ use shared::{
     domain_trie::{DomainTrie, RuleMatch, check_rules},
 };
 use tokio::{io::AsyncWriteExt, net::UdpSocket, time::timeout};
-use tracing::{debug, error, span::Record, warn};
+use tracing::{debug, error, warn};
 
 pub struct HandleQueryParams<'a> {
     pub payload: &'a [u8],
@@ -97,7 +97,9 @@ pub async fn resolve_query<'a>(params: &HandleQueryParams<'a>) -> Option<Vec<u8>
         RuleMatch::None => {}
     }
 
-    let cache_key = cache_key_from_query(payload)?;
+    // Direct upstream resolution attaches ECS for non-loopback clients, so a
+    // cached answer must stay scoped to that client's network.
+    let cache_key = cache_key_from_query_for_client(payload, Some(src_addr))?;
     let req_txid = [payload[0], payload[1]];
 
     if let Some(cached) = cache_lookup(cache, &cache_key) {

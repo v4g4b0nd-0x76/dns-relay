@@ -109,6 +109,25 @@ fn trie_matches_exact_and_wildcard_patterns() {
 }
 
 #[test]
+fn trie_matches_label_glob_patterns() {
+    let drop_list = vec![
+        "ad-*.doubleclick.net".to_string(),
+        "*.ads.google.*".to_string(),
+    ];
+    let trie = DomainTrie::build(&drop_list, &[]);
+
+    assert_eq!(
+        trie.lookup("ad-fr.doubleclick.net"),
+        &DomainTriePolicy::Drop
+    );
+    assert_eq!(
+        trie.lookup("ad.fr.doubleclick.net"),
+        &DomainTriePolicy::None
+    );
+    assert_eq!(trie.lookup("page.ads.google.com"), &DomainTriePolicy::Drop);
+}
+
+#[test]
 fn trie_redirect_carries_ip_list() {
     let redirect_list = vec![(
         "*.test.com".to_string(),

@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use serde::Deserialize;
 use shared::Error;
 use shared::deserialize_redirect_list;
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Conf {
     #[serde(default = "default_empty_vec")]
     pub drop_list: Vec<String>,
@@ -82,7 +82,7 @@ pub struct HotreloadConf {
 }
 
 use arc_swap::ArcSwap;
-use shared::domain_trie::DomainTrie;
+use shared::domain_trie::{DomainTrie, referenced_rule_files};
 use shared::metric_wrapper::MetricConf;
 use tokio::time::interval;
 use tracing::{error, info};
@@ -96,6 +96,7 @@ pub async fn watch_conf_and_reload(
     let mut tick = interval(poll_interval);
     let mut last_mtime: Option<SystemTime> =
         std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let mut list_mtimes = rule_file_mtimes(&conf.read().unwrap());
 
     loop {
         tick.tick().await;
@@ -107,22 +108,43 @@ pub async fn watch_conf_and_reload(
                 continue;
             }
         };
-        if Some(mtime) == last_mtime {
+        let config_changed = Some(mtime) != last_mtime;
+        let current_list_mtimes = rule_file_mtimes(&conf.read().unwrap());
+        let lists_changed = current_list_mtimes != list_mtimes;
+        if !config_changed && !lists_changed {
             continue;
         }
         last_mtime = Some(mtime);
 
-        match load_conf(&path) {
+        let new_conf = if config_changed {
+            load_conf(&path)
+        } else {
+            Ok(conf.read().unwrap().clone())
+        };
+        match new_conf {
             Ok(new_conf) => {
                 let new_trie = DomainTrie::build(&new_conf.drop_list, &new_conf.redirect_list);
                 rule_trie.store(Arc::new(new_trie));
+                list_mtimes = rule_file_mtimes(&new_conf);
                 *conf.write().unwrap() = new_conf;
 
-                info!("config reloaded successfully");
+                info!(config_changed, lists_changed, "rules reloaded successfully");
             }
             Err(err) => error!("failed to reload conf.toml, keeping old config: {}", err),
         }
     }
+}
+
+fn rule_file_mtimes(conf: &Conf) -> Vec<(std::path::PathBuf, Option<SystemTime>)> {
+    let mut files: Vec<_> = referenced_rule_files(&conf.drop_list, &conf.redirect_list)
+        .into_iter()
+        .map(|path| {
+            let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            (path, mtime)
+        })
+        .collect();
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
 }
 
 pub fn load_conf(conf_path: &PathBuf) -> Result<Conf, Error> {

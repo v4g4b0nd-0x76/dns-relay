@@ -1,8 +1,5 @@
-#/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-sudo launchctl disable system/com.dns-relay
-sudo launchctl bootout system/com.dns-relay
-
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.dns-relay.plist
-sudo launchctl enable system/com.dns-relay
-sudo launchctl kickstart -k system/com.dns-relay
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec sudo "$ROOT/scripts/install_macos.sh"
