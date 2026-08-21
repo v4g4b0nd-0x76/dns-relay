@@ -420,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "dns_relay"
-version = "1.6.4"
+version = "1.6.6"
 dependencies = [
  "aes-gcm",
  "arc-swap",
@@ -1316,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "resolver_proxy"
-version = "1.6.4"
+version = "1.6.6"
 dependencies = [
  "arc-swap",
  "clap",

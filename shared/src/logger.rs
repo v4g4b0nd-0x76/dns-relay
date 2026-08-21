@@ -11,7 +11,6 @@ pub fn init_logger() -> WorkerGuard {
         AppendCount::new(10),
         ContentLimit::Bytes(1_000_000_000),
         Compression::None,
-        #[cfg(unix)]
         None,
     );
 

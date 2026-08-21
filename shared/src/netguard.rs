@@ -5,15 +5,13 @@
 //! actually present, and reverts everything it changed when the VPN goes
 //! away or the process shuts down.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering::Relaxed},
-};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::{Arc, atomic::AtomicBool};
 
-use tokio::{
-    process::Command,
-    time::{Duration, sleep},
-};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use tokio::process::Command;
+use tokio::time::{Duration, sleep};
 use tracing::{info, warn};
 
 use crate::constants::NETGUARD_POLL_INTERVAL_MS;
@@ -490,7 +488,7 @@ mod platform {
 mod platform {
     use super::*;
 
-    pub async fn tick(_is_vpn_active: &Arc<AtomicBool>) -> Result<(), String> {
+    pub async fn tick(_is_vpn_active: &Arc<AtomicBool>, _dns_target: &str) -> Result<(), String> {
         Err("netguard is only implemented for macOS and Linux".into())
     }
 
