@@ -20,14 +20,20 @@ use shared::{
     netguard::run_network_guard,
     obfs::{LEN_PREFIX, NONCE_LEN, ObfsKey, PAD_MAX, TAG_LEN},
 };
+#[cfg(unix)]
+use std::os::unix::{fs::PermissionsExt, process::CommandExt};
 use std::{
+    env,
+    fs::{self, OpenOptions},
     io,
     net::SocketAddr,
     path::PathBuf,
+    process::{Command, Stdio},
     sync::{
         Arc, RwLock,
         atomic::{AtomicBool, Ordering::Relaxed},
     },
+    thread,
     time::Duration,
 };
 use tokio::{net::UdpSocket, sync::Semaphore};
@@ -51,7 +57,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Run the DNS server (default if no subcommand given)
-    Run,
+    Run {
+        /// Detach the server and write its output to the per-user log file
+        #[arg(long)]
+        background: bool,
+    },
+
+    /// Stop the server started by `run --background`
+    Stop,
+
+    /// Print the background server log
+    Logs {
+        /// Continue streaming new log lines
+        #[arg(short, long)]
+        follow: bool,
+    },
 
     /// Validate the config file and exit
     CheckConf,
@@ -77,25 +97,212 @@ enum Commands {
 async fn main() -> Result<(), Error> {
     let _ = init_logger();
     let cli = Cli::parse();
-    let conf = load_conf(&cli.conf)?;
-    if conf.init_tls {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .expect("failed to install rustls crypto provider");
+    let command = cli.command.unwrap_or(Commands::Run { background: false });
+
+    match command {
+        Commands::Stop => stop_background_server(),
+        Commands::Logs { follow } => show_background_logs(follow),
+        command => {
+            let conf = load_conf(&cli.conf)?;
+            if conf.init_tls {
+                rustls::crypto::ring::default_provider()
+                    .install_default()
+                    .expect("failed to install rustls crypto provider");
+            }
+
+            match command {
+                Commands::Run { background: true } => start_background_server(&cli.conf),
+                Commands::Run { background: false } => run_server(&cli.conf).await,
+                Commands::CheckConf => check_conf(&cli.conf),
+                Commands::ListRules => list_rules(&cli.conf),
+                Commands::Resolvers => list_resolvers(&cli.conf).await,
+                Commands::GenRelayKey => gen_relay_key(&cli.conf),
+                Commands::Resolve {
+                    domain,
+                    resolver,
+                    relay,
+                } => resolve(&cli.conf, &domain, resolver, relay).await,
+                Commands::Stop | Commands::Logs { .. } => unreachable!(),
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn background_state_dir() -> Result<PathBuf, Error> {
+    let base = if cfg!(target_os = "macos") {
+        env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Library/Application Support"))
+    } else {
+        env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+    }
+    .ok_or_else(|| Error::Config("cannot determine a per-user state directory".into()))?;
+
+    let path = base.join("dns_relay");
+    fs::create_dir_all(&path).map_err(|err| Error::Config(err.to_string()))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+        .map_err(|err| Error::Config(err.to_string()))?;
+    Ok(path)
+}
+
+#[cfg(unix)]
+fn background_paths() -> Result<(PathBuf, PathBuf), Error> {
+    let dir = background_state_dir()?;
+    Ok((dir.join("dns_relay.pid"), dir.join("dns_relay.log")))
+}
+
+#[cfg(unix)]
+fn read_background_pid(pid_path: &PathBuf) -> Result<Option<u32>, Error> {
+    match fs::read_to_string(pid_path) {
+        Ok(contents) => contents
+            .trim()
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|_| Error::Config(format!("invalid PID file: {}", pid_path.display()))),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(Error::Config(err.to_string())),
+    }
+}
+
+#[cfg(unix)]
+fn process_is_running(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(unix)]
+fn start_background_server(conf_path: &PathBuf) -> Result<(), Error> {
+    let (pid_path, log_path) = background_paths()?;
+    if let Some(pid) = read_background_pid(&pid_path)? {
+        if process_is_running(pid) {
+            return Err(Error::Config(format!(
+                "dns_relay is already running in the background (PID {pid}); use `dns_relay logs --follow` or `dns_relay stop`"
+            )));
+        }
+        fs::remove_file(&pid_path).map_err(|err| Error::Config(err.to_string()))?;
     }
 
-    match cli.command.unwrap_or(Commands::Run) {
-        Commands::Run => run_server(&cli.conf).await,
-        Commands::CheckConf => check_conf(&cli.conf),
-        Commands::ListRules => list_rules(&cli.conf),
-        Commands::Resolvers => list_resolvers(&cli.conf).await,
-        Commands::GenRelayKey => gen_relay_key(&cli.conf),
-        Commands::Resolve {
-            domain,
-            resolver,
-            relay,
-        } => resolve(&cli.conf, &domain, resolver, relay).await,
+    let absolute_conf =
+        fs::canonicalize(conf_path).map_err(|err| Error::Config(err.to_string()))?;
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|err| Error::Config(err.to_string()))?;
+    let stderr = log
+        .try_clone()
+        .map_err(|err| Error::Config(err.to_string()))?;
+    let executable = env::current_exe().map_err(|err| Error::Config(err.to_string()))?;
+    let mut command = Command::new(executable);
+    command
+        .arg("--conf")
+        .arg(absolute_conf)
+        .arg("run")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr));
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
+    let child = command
+        .spawn()
+        .map_err(|err| Error::Config(err.to_string()))?;
+    fs::write(&pid_path, child.id().to_string()).map_err(|err| Error::Config(err.to_string()))?;
+    println!(
+        "dns_relay started in the background (PID {}); logs: {}",
+        child.id(),
+        log_path.display()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn stop_background_server() -> Result<(), Error> {
+    let (pid_path, _) = background_paths()?;
+    let Some(pid) = read_background_pid(&pid_path)? else {
+        return Err(Error::Config(
+            "dns_relay is not running in the background".into(),
+        ));
+    };
+    if !process_is_running(pid) {
+        fs::remove_file(&pid_path).map_err(|err| Error::Config(err.to_string()))?;
+        return Err(Error::Config("removed stale dns_relay PID file".into()));
+    }
+    let status = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()
+        .map_err(|err| Error::Config(err.to_string()))?;
+    if !status.success() {
+        return Err(Error::Config(format!(
+            "could not stop dns_relay (PID {pid})"
+        )));
+    }
+    for _ in 0..50 {
+        if !process_is_running(pid) {
+            fs::remove_file(&pid_path).map_err(|err| Error::Config(err.to_string()))?;
+            println!("stopped dns_relay (PID {pid})");
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err(Error::Config(format!(
+        "sent a stop signal to dns_relay (PID {pid}), but it is still exiting; retry `dns_relay stop`"
+    )))
+}
+
+#[cfg(unix)]
+fn show_background_logs(follow: bool) -> Result<(), Error> {
+    let (_, log_path) = background_paths()?;
+    if !log_path.exists() {
+        return Err(Error::Config("no background log exists yet".into()));
+    }
+    let mut command = Command::new("tail");
+    command.arg("-n").arg("100");
+    if follow {
+        command.arg("-f");
+    }
+    let status = command
+        .arg(log_path)
+        .status()
+        .map_err(|err| Error::Config(err.to_string()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Error::Config(
+            "could not read dns_relay background log".into(),
+        ))
+    }
+}
+
+#[cfg(not(unix))]
+fn start_background_server(_conf_path: &PathBuf) -> Result<(), Error> {
+    Err(Error::Config(
+        "background mode is currently supported on Linux and macOS only".into(),
+    ))
+}
+
+#[cfg(not(unix))]
+fn stop_background_server() -> Result<(), Error> {
+    Err(Error::Config(
+        "background mode is currently supported on Linux and macOS only".into(),
+    ))
+}
+
+#[cfg(not(unix))]
+fn show_background_logs(_follow: bool) -> Result<(), Error> {
+    Err(Error::Config(
+        "background mode is currently supported on Linux and macOS only".into(),
+    ))
 }
 
 async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {

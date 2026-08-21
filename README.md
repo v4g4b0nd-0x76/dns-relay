@@ -24,6 +24,7 @@ make build                     # auto-detect host target, build dns_relay
 make build-gnu                 # x86_64-unknown-linux-gnu, dns_relay
 make build-musl                # static musl build, dns_relay
 make build-mac                 # aarch64-apple-darwin, dns_relay
+./scripts/build.sh windows dns_relay # x86_64-pc-windows-msvc, dns_relay.exe
 make test                       # cargo test --bin dns_relay
 make run                        # build then run dns_relay
 make caps                       # setcap on dns_relay binary
@@ -46,6 +47,7 @@ make caps bin=resolver_proxy
 ./scripts/build.sh gnu resolver_proxy
 ./scripts/build.sh musl resolver_proxy
 ./scripts/build.sh mac resolver_proxy
+./scripts/build.sh windows resolver_proxy # x86_64-pc-windows-msvc, resolver_proxy.exe
 ./scripts/build.sh all resolver_proxy   # attempt every target for resolver_proxy
 
 
@@ -57,3 +59,11 @@ make major
 make patch PUSH=1               # bump + push commit and tag to origin
 
 ```
+
+### Windows releases
+
+The Windows release ZIP for the main resolver contains `dns_relay.exe`; the
+proxy release ZIP contains `resolver_proxy.exe`. Open PowerShell or Command
+Prompt **as Administrator** before running either program when it is configured
+to listen on DNS port 53, since Windows reserves that privileged port for
+elevated processes.

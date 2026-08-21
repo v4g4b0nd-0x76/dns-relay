@@ -36,6 +36,13 @@ jobs:
             build_arg: mac
             bin: dns_relay
             asset: dns-relay-aarch64-apple-darwin
+          - name: dns-relay-windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            build_arg: windows
+            bin: dns_relay
+            asset: dns-relay-x86_64-pc-windows-msvc
+            windows: true
 
           # resolver_proxy
           - name: resolver-proxy-linux-gnu
@@ -57,6 +64,13 @@ jobs:
             build_arg: mac
             bin: resolver_proxy
             asset: resolver-proxy-aarch64-apple-darwin
+          - name: resolver-proxy-windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            build_arg: windows
+            bin: resolver_proxy
+            asset: resolver-proxy-x86_64-pc-windows-msvc
+            windows: true
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
@@ -75,6 +89,7 @@ jobs:
           chmod +x scripts/build.sh
           ./scripts/build.sh "${{ matrix.build_arg }}" "${{ matrix.bin }}"
       - name: Package artifact
+        if: "!matrix.windows"
         run: |
           src="target/${{ matrix.target }}/release/${{ matrix.bin }}"
           test -f "$src"
@@ -82,13 +97,35 @@ jobs:
           chmod +x "${{ matrix.asset }}"
           tar -czf "${{ matrix.asset }}.tar.gz" "${{ matrix.asset }}"
           shasum -a 256 "${{ matrix.asset }}" "${{ matrix.asset }}.tar.gz" > "${{ matrix.asset }}.sha256"
+      - name: Package Windows artifact
+        if: matrix.windows
+        shell: pwsh
+        run: |
+          $src = "target/${{ matrix.target }}/release/${{ matrix.bin }}.exe"
+          if (!(Test-Path $src)) { throw "Missing release binary: $src" }
+          Copy-Item $src "${{ matrix.bin }}.exe"
+          Compress-Archive -Path "${{ matrix.bin }}.exe" -DestinationPath "${{ matrix.asset }}.zip"
+          Get-FileHash -Algorithm SHA256 "${{ matrix.bin }}.exe", "${{ matrix.asset }}.zip" |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), $_.Path } |
+            Set-Content "${{ matrix.asset }}.sha256"
       - name: Upload build artifact
+        if: "!matrix.windows"
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
           path: |
             ${{ matrix.asset }}
             ${{ matrix.asset }}.tar.gz
+            ${{ matrix.asset }}.sha256
+          if-no-files-found: error
+      - name: Upload Windows build artifact
+        if: matrix.windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.bin }}.exe
+            ${{ matrix.asset }}.zip
             ${{ matrix.asset }}.sha256
           if-no-files-found: error
   release:

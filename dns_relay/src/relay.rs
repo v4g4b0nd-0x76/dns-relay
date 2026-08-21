@@ -90,14 +90,23 @@ pub async fn resolve_via_relay(
     let encrypted = encode_for_relay(key, dns_query);
     let response = http
         .post(worker_url)
+        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+        .header(reqwest::header::ACCEPT, "application/octet-stream")
         .body(encrypted)
         .send()
         .await
         .map_err(|e| Error::Config(e.to_string()))?;
+    let status = response.status();
     let body = response
         .bytes()
         .await
         .map_err(|e| Error::Config(e.to_string()))?;
+    if !status.is_success() {
+        return Err(Error::Config(format!(
+            "relay returned {status}: {}",
+            String::from_utf8_lossy(&body)
+        )));
+    }
     decode_from_relay(key, &body).ok_or_else(|| Error::Config("decrypt failed".into()))
 }
 

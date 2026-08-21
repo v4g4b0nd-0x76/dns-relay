@@ -1,190 +1,161 @@
-const RELAY_KEY = "" // genereate using gen-relay-key;
-
 const DOH_ENDPOINTS = [
   "https://cloudflare-dns.com/dns-query",
   "https://dns.google/dns-query",
   "https://dns.quad9.net/dns-query",
 ];
+const MAX_DNS_PACKET_BYTES = 4096;
+const CACHE_TTL_SECONDS = 60;
+const UPSTREAM_TIMEOUT_MS = 3000;
+let nextEndpoint = 0;
 
 export default {
-  async fetch(request) {
-    if (request.method !== "POST") {
+  async fetch(request, env) {
+    if (request.method !== "POST")
       return new Response("not found", { status: 404 });
+    if (!env.RELAY_KEY) {
+      console.error("RELAY_KEY secret is not configured");
+      return new Response("relay unavailable", { status: 503 });
     }
+
     try {
-      const body = await request.arrayBuffer();
-      const encryptedQuery = new Uint8Array(body);
-      const dnsQuery = await decodeFromRelay(encryptedQuery, base64ToBytes(RELAY_KEY));
-      if (!dnsQuery) {
+      const encryptedQuery = new Uint8Array(await request.arrayBuffer());
+      if (encryptedQuery.length > MAX_DNS_PACKET_BYTES + 28) {
+        return new Response("payload too large", { status: 413 });
+      }
+
+      const relayKey = base64ToBytes(env.RELAY_KEY);
+      const dnsQuery = await decodeFromRelay(encryptedQuery, relayKey);
+      if (!isValidDnsQuery(dnsQuery))
         return new Response("bad request", { status: 400 });
+
+      const cache = caches.default;
+      const cacheRequest = await cacheRequestFor(dnsQuery, relayKey);
+      let reply = await readCachedReply(cache, cacheRequest);
+      if (!reply) {
+        reply = await resolveUpstream(dnsQuery);
+        // Caching is an optimization. A Cache API failure must not fail DNS.
+        await cacheReply(cache, cacheRequest, reply).catch((err) => {
+          console.warn("relay cache write failed", err);
+        });
       }
 
-      const isAQuery = getQuestionType(dnsQuery) === 1;
-      const rounds = isAQuery ? 3 : 1;
-      const allIps = new Set();
-      let lastReply = null;
-
-      for (let r = 0; r < rounds; r++) {
-        const responses = await Promise.allSettled(
-          DOH_ENDPOINTS.map((url) => queryDoh(url, dnsQuery)),
-        );
-        for (const res of responses) {
-          if (res.status !== "fulfilled" || !res.value) continue; // skip failed resolvers
-          try {
-            const ips = extractARecords(res.value);
-            lastReply = res.value; // any successful reply can serve as the template
-            for (const ip of ips) allIps.add(ip);
-          } catch (err) {
-            console.error("failed to parse DoH reply", err);
-          }
-        }
-        if (r < rounds - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 150));
-        }
-      }
-
-      if (!lastReply) {
-        return new Response("upstream failed", { status: 502 });
-      }
-
-      const finalReply = isAQuery
-        ? rewriteAnswersWithIps(lastReply, Array.from(allIps))
-        : lastReply;
-
-      const encryptedReply = await encodeForRelay(finalReply, base64ToBytes(RELAY_KEY));
+      // The key excludes the DNS transaction ID, allowing cache reuse. Restore
+      // the caller's ID before encryption so the response remains valid.
+      const encryptedReply = await encodeForRelay(
+        withTransactionId(reply, dnsQuery),
+        relayKey,
+      );
       return new Response(encryptedReply, {
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/octet-stream" },
       });
     } catch (err) {
-      console.error("worker fatal error", err);
-      return new Response("internal error", { status: 500 });
+      console.error("worker relay failure", err);
+      return new Response("upstream failed", { status: 502 });
     }
   },
 };
 
-async function queryDoh(url, dnsQuery) {
+function isValidDnsQuery(packet) {
+  return packet && packet.length >= 12 && !(packet[2] & 0x80);
+}
+
+async function resolveUpstream(dnsQuery) {
+  // A two-provider hedge replaces the old three-round, three-provider fan-out
+  // (nine upstream requests per miss). The third provider is only a fallback.
+  const start = nextEndpoint;
+  nextEndpoint = (nextEndpoint + 1) % DOH_ENDPOINTS.length;
+  const first = DOH_ENDPOINTS[start];
+  const second = DOH_ENDPOINTS[(start + 1) % DOH_ENDPOINTS.length];
+  const third = DOH_ENDPOINTS[(start + 2) % DOH_ENDPOINTS.length];
+
   try {
-    const resp = await fetch(url, {
+    return await Promise.any([
+      queryDoh(first, dnsQuery),
+      queryDoh(second, dnsQuery),
+    ]);
+  } catch {
+    return queryDoh(third, dnsQuery);
+  }
+}
+
+async function queryDoh(url, dnsQuery) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/dns-message",
         accept: "application/dns-message",
       },
       body: dnsQuery,
+      signal: controller.signal,
     });
-    if (!resp.ok) return null;
-    return new Uint8Array(await resp.arrayBuffer());
-  } catch {
-    return null;
+    if (!response.ok) throw new Error(`upstream returned ${response.status}`);
+
+    const reply = new Uint8Array(await response.arrayBuffer());
+    if (!isCacheableReply(reply))
+      throw new Error("invalid upstream DNS response");
+    return reply;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
-// --- minimal DNS wire-format helpers ---
-
-function getQuestionType(packet) {
-  let offset = 12;
-  offset = skipName(packet, offset);
-  return (packet[offset] << 8) | packet[offset + 1];
+function isCacheableReply(packet) {
+  if (!packet || packet.length < 12) return false;
+  const flags = (packet[2] << 8) | packet[3];
+  const isResponse = (flags & 0x8000) !== 0;
+  const isTruncated = (flags & 0x0200) !== 0;
+  const rcode = flags & 0x000f;
+  return isResponse && !isTruncated && rcode !== 2; // SERVFAIL is transient.
 }
 
-function skipName(packet, offset) {
-  while (true) {
-    const len = packet[offset];
-    if (len === 0) return offset + 1;
-    if ((len & 0xc0) === 0xc0) return offset + 2;
-    offset += len + 1;
-  }
+async function cacheRequestFor(query, relayKey) {
+  const canonical = query.slice();
+  canonical[0] = 0;
+  canonical[1] = 0;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    relayKey,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const digest = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, canonical),
+  );
+  return new Request(`https://relay-cache.invalid/v1/${bytesToHex(digest)}`);
 }
 
-function extractARecords(packet) {
-  const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
-  const qdCount = view.getUint16(4);
-  const anCount = view.getUint16(6);
-
-  let offset = 12;
-  for (let i = 0; i < qdCount; i++) {
-    offset = skipName(packet, offset);
-    offset += 4;
-  }
-
-  const ips = [];
-  for (let i = 0; i < anCount; i++) {
-    offset = skipName(packet, offset);
-    const type = view.getUint16(offset);
-    const rdlength = view.getUint16(offset + 8);
-    const rdataOffset = offset + 10;
-    if (type === 1 && rdlength === 4) {
-      ips.push(
-        `${packet[rdataOffset]}.${packet[rdataOffset + 1]}.${packet[rdataOffset + 2]}.${packet[rdataOffset + 3]}`,
-      );
-    }
-    offset = rdataOffset + rdlength;
-  }
-  return ips;
+async function readCachedReply(cache, request) {
+  const cached = await cache.match(request);
+  return cached ? new Uint8Array(await cached.arrayBuffer()) : null;
 }
 
-function rewriteAnswersWithIps(templatePacket, ips) {
-  const view = new DataView(templatePacket.buffer, templatePacket.byteOffset, templatePacket.byteLength);
-  const qdCount = view.getUint16(4);
-  const anCount = view.getUint16(6);
-  const nsCount = view.getUint16(8);
-  const arCount = view.getUint16(10);
+async function cacheReply(cache, request, reply) {
+  const canonical = reply.slice();
+  canonical[0] = 0;
+  canonical[1] = 0;
+  await cache.put(
+    request,
+    new Response(canonical, {
+      headers: {
+        "cache-control": `public, max-age=${CACHE_TTL_SECONDS}`,
+        "content-type": "application/dns-message",
+      },
+    }),
+  );
+}
 
-  let offset = 12;
-  for (let i = 0; i < qdCount; i++) {
-    offset = skipName(templatePacket, offset);
-    offset += 4;
-  }
-  const questionEnd = offset;
-
-  for (let i = 0; i < anCount; i++) {
-    offset = skipName(templatePacket, offset);
-    const rdlength = view.getUint16(offset + 8);
-    offset += 10 + rdlength;
-  }
-  const answersEnd = offset;
-
-  const tail = templatePacket.slice(answersEnd);
-  const header = templatePacket.slice(0, 12);
-  const question = templatePacket.slice(12, questionEnd);
-  const answers = ips.map((ip) => buildARecord(ip));
-  const answersBytes = answers.reduce((s, a) => s + a.length, 0);
-
-  const totalLen = 12 + question.length + answersBytes + tail.length;
-  const out = new Uint8Array(totalLen);
-
-  out.set(header, 0);
-  const outView = new DataView(out.buffer);
-  outView.setUint16(6, ips.length);
-  outView.setUint16(8, nsCount);
-  outView.setUint16(10, arCount);
-
-  out.set(question, 12);
-  let pos = 12 + question.length;
-  for (const rec of answers) {
-    out.set(rec, pos);
-    pos += rec.length;
-  }
-  out.set(tail, pos);
-
+function withTransactionId(reply, query) {
+  const out = reply.slice();
+  out[0] = query[0];
+  out[1] = query[1];
   return out;
 }
 
-function buildARecord(ip) {
-  const rec = new Uint8Array(16);
-  rec[0] = 0xc0; rec[1] = 0x0c;
-  rec[2] = 0x00; rec[3] = 0x01;
-  rec[4] = 0x00; rec[5] = 0x01;
-  rec[6] = 0; rec[7] = 0; rec[8] = 0; rec[9] = 60;
-  rec[10] = 0x00; rec[11] = 0x04;
-  const parts = ip.split(".").map(Number);
-  rec.set(parts, 12);
-  return rec;
-}
-
-// --- AES-256-GCM relay encryption, matching the Rust side's 12-byte-nonce-prefix layout ---
-
-async function importKey(rawKeyBytes) {
+async function importAesKey(rawKeyBytes) {
   return crypto.subtle.importKey("raw", rawKeyBytes, "AES-GCM", false, [
     "encrypt",
     "decrypt",
@@ -192,15 +163,13 @@ async function importKey(rawKeyBytes) {
 }
 
 async function decodeFromRelay(packet, rawKeyBytes) {
-  if (packet.length < 12) return null;
+  if (packet.length < 28) return null;
   try {
-    const key = await importKey(rawKeyBytes);
-    const nonce = packet.slice(0, 12);
-    const ciphertext = packet.slice(12);
+    const key = await importAesKey(rawKeyBytes);
     const plaintext = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: nonce },
+      { name: "AES-GCM", iv: packet.slice(0, 12) },
       key,
-      ciphertext,
+      packet.slice(12),
     );
     return new Uint8Array(plaintext);
   } catch {
@@ -209,7 +178,7 @@ async function decodeFromRelay(packet, rawKeyBytes) {
 }
 
 async function encodeForRelay(plaintext, rawKeyBytes) {
-  const key = await importKey(rawKeyBytes);
+  const key = await importAesKey(rawKeyBytes);
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: nonce },
@@ -223,5 +192,11 @@ async function encodeForRelay(plaintext, rawKeyBytes) {
 }
 
 function base64ToBytes(b64) {
-  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  return Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }

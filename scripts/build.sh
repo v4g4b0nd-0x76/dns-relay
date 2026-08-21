@@ -66,6 +66,9 @@ musl-arm)
 mac | macos | m4)
     build_one "aarch64-apple-darwin"
     ;;
+windows | win)
+    build_one "x86_64-pc-windows-msvc"
+    ;;
 all)
     build_one "x86_64-unknown-linux-gnu" || true
     build_one "aarch64-unknown-linux-gnu" || true
@@ -74,7 +77,7 @@ all)
     build_one "aarch64-apple-darwin" || true
     ;;
 *)
-    echo "usage: $0 [auto|gnu|gnu-arm|musl|musl-arm|mac|all] [bin_name]" >&2
+    echo "usage: $0 [auto|gnu|gnu-arm|musl|musl-arm|mac|windows|all] [bin_name]" >&2
     exit 1
     ;;
 esac

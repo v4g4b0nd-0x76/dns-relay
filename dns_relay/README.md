@@ -33,9 +33,23 @@ Since it needs to bind to port 53, it needs elevated privileges. Either run it w
 sudo setcap cap_net_bind_service=+ep PATH_TO_BINARY
 ```
 
-## Running as a service
+## Running in the background
 
-There are systemd (Linux) and launchd (macOS) setup notes in `assets/SERVICES.md`, with unit files at `assets/dns_relay.service` and `assets/com.dns-hijacker.plist`.
+No systemd or launchd service is required. The binary can detach itself and
+keep its PID and log in a private per-user state directory:
+
+```bash
+dns_relay --conf /absolute/path/conf.toml run --background
+dns_relay logs --follow
+dns_relay stop
+```
+
+On Linux the state directory is `$XDG_STATE_HOME/dns_relay` (or
+`~/.local/state/dns_relay`); on macOS it is
+`~/Library/Application Support/dns_relay`. The process is detached from the
+terminal, so it stays running after the terminal closes. It still needs the
+privileges required by its configuration: binding port 53 requires `sudo` or
+the Linux `cap_net_bind_service` capability.
 
 ## Config format
 
