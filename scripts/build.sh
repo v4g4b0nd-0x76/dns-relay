@@ -27,6 +27,9 @@ build_one() {
     RUSTFLAGS="$BASE_RUSTFLAGS $extra_flags" \
         cargo build --bin "$bin" --release --target "$triple"
     local out="target/${triple}/release/${bin}"
+    if [[ "$triple" == *-windows-* ]]; then
+        out="${out}.exe"
+    fi
     if [[ -f "$out" ]]; then
         echo "==> artifact: $out ($(du -h "$out" | awk '{print $1}'))"
         file "$out" || true
