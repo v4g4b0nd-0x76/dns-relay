@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 pub const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
-pub const CACHE_CAPACITY: usize = 4096;
-pub const CACHE_TTL_MIN: Duration = Duration::from_secs(5);
-pub const CACHE_TTL_MAX: Duration = Duration::from_secs(300);
-pub const CACHE_TTL_FALLBACK: Duration = Duration::from_secs(60);
+pub const CACHE_CAPACITY: usize = 8192;
+pub const CACHE_TTL_MIN: Duration = Duration::from_secs(1);
+pub const CACHE_TTL_MAX: Duration = Duration::from_secs(3600);
+pub const CACHE_STALE_TTL: Duration = Duration::from_secs(300);
 pub const SOCKET_RCVBUF_BYTES: usize = 4 * 1024 * 1024; // 4MB
 pub const RESOLVE_SEMAPHORE: usize = 512; // was likely 64/128 — raise it
 pub const BACKLOG_CAPACITY: usize = 1024; // bounded, ~2x semaphore size

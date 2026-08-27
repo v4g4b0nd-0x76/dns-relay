@@ -8,8 +8,11 @@ use std::{
 use lru::LruCache;
 
 use crate::{
-    constants::{CACHE_CAPACITY, CACHE_TTL_MAX, CACHE_TTL_MIN},
-    dns::{find_opt_record, matches_domain_pattern, min_answer_ttl, parse_domain},
+    constants::{CACHE_CAPACITY, CACHE_STALE_TTL, CACHE_TTL_MAX, CACHE_TTL_MIN},
+    dns::{
+        age_response_ttls, find_opt_record, matches_domain_pattern, parse_domain,
+        response_cache_ttl,
+    },
 };
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
@@ -28,7 +31,9 @@ pub struct CacheKey {
 
 pub struct CacheEntry {
     pub packet: Vec<u8>,
-    pub expires_at: Instant,
+    pub inserted_at: Instant,
+    pub fresh_until: Instant,
+    pub stale_until: Instant,
 }
 
 pub type ResponseCache = Mutex<LruCache<CacheKey, CacheEntry>>;
@@ -106,24 +111,33 @@ pub fn clamp_cache_ttl(ttl_secs: u32) -> Duration {
 
 pub fn cache_lookup(cache: &ResponseCache, key: &CacheKey) -> Option<Vec<u8>> {
     let mut guard = cache.lock().ok()?;
+    let now = Instant::now();
     let entry = guard.get(key)?;
-    if Instant::now() >= entry.expires_at {
+    if now >= entry.fresh_until {
+        return None;
+    }
+    let mut packet = entry.packet.clone();
+    age_response_ttls(&mut packet, now.duration_since(entry.inserted_at), false).then_some(packet)
+}
+
+pub fn cache_lookup_stale(cache: &ResponseCache, key: &CacheKey) -> Option<Vec<u8>> {
+    let mut guard = cache.lock().ok()?;
+    let now = Instant::now();
+    let expired = now >= guard.peek(key)?.stale_until;
+    if expired {
         guard.pop(key);
         return None;
     }
-    Some(entry.packet.clone())
+    let entry = guard.get(key)?;
+    if now < entry.fresh_until {
+        return None;
+    }
+    let mut packet = entry.packet.clone();
+    age_response_ttls(&mut packet, now.duration_since(entry.inserted_at), true).then_some(packet)
 }
 
 pub fn cache_store(cache: &ResponseCache, key: CacheKey, packet: &[u8]) {
-    // Never cache transport failures, SERVFAIL/REFUSED responses, truncated
-    // replies, or answerless replies.  The former poisoned the old cache for
-    // a minute after a transient upstream problem; the latter need authority
-    // SOA parsing for RFC-compliant negative caching, so leaving them uncached
-    // is the safe choice.
-    if !is_cacheable_answer(packet) {
-        return;
-    }
-    let Some(ttl) = min_answer_ttl(packet).map(clamp_cache_ttl) else {
+    let Some(ttl) = response_cache_ttl(packet).map(clamp_cache_ttl) else {
         return;
     };
     let mut stored = packet.to_vec();
@@ -132,28 +146,18 @@ pub fn cache_store(cache: &ResponseCache, key: CacheKey, packet: &[u8]) {
         stored[1] = 0;
     }
     if let Ok(mut guard) = cache.lock() {
+        let inserted_at = Instant::now();
+        let fresh_until = inserted_at + ttl;
         guard.put(
             key,
             CacheEntry {
                 packet: stored,
-                expires_at: Instant::now() + ttl,
+                inserted_at,
+                fresh_until,
+                stale_until: fresh_until + CACHE_STALE_TTL,
             },
         );
     }
-}
-
-fn is_cacheable_answer(packet: &[u8]) -> bool {
-    if packet.len() < 12 {
-        return false;
-    }
-    let flags = u16::from_be_bytes([packet[2], packet[3]]);
-    let answer_count = u16::from_be_bytes([packet[6], packet[7]]);
-    let rcode = flags & 0x000F;
-
-    flags & 0x8000 != 0 // QR: response
-        && flags & 0x0200 == 0 // TC: not truncated
-        && rcode == 0 // NOERROR
-        && answer_count > 0
 }
 
 pub type DomainCache = Mutex<LruCache<String, Vec<Ipv4Addr>>>;

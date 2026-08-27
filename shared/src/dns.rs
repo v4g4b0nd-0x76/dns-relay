@@ -1,5 +1,5 @@
 use rand::RngExt;
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 use tokio::net::UdpSocket;
 
 #[inline(always)]
@@ -288,6 +288,126 @@ pub fn min_answer_ttl(packet: &[u8]) -> Option<u32> {
     } else {
         Some(min_ttl)
     }
+}
+
+pub fn response_cache_ttl(packet: &[u8]) -> Option<u32> {
+    if packet.len() < 12 || packet[2] & 0x80 == 0 || packet[2] & 0x02 != 0 {
+        return None;
+    }
+    let rcode = packet[3] & 0x0F;
+    if rcode != 0 && rcode != 3 {
+        return None;
+    }
+
+    let qdcount = u16::from_be_bytes([packet[4], packet[5]]) as usize;
+    let ancount = u16::from_be_bytes([packet[6], packet[7]]) as usize;
+    let nscount = u16::from_be_bytes([packet[8], packet[9]]) as usize;
+    let mut offset = 12;
+    for _ in 0..qdcount {
+        offset = skip_name(packet, offset)? + 4;
+        if offset > packet.len() {
+            return None;
+        }
+    }
+
+    let mut answer_ttl = u32::MAX;
+    for _ in 0..ancount {
+        let name_end = skip_name(packet, offset)?;
+        if name_end + 10 > packet.len() {
+            return None;
+        }
+        let ttl = u32::from_be_bytes(packet[name_end + 4..name_end + 8].try_into().ok()?);
+        let rdlength = u16::from_be_bytes([packet[name_end + 8], packet[name_end + 9]]) as usize;
+        offset = name_end + 10 + rdlength;
+        if offset > packet.len() || ttl == 0 {
+            return None;
+        }
+        answer_ttl = answer_ttl.min(ttl);
+    }
+    if ancount > 0 {
+        return (answer_ttl != u32::MAX).then_some(answer_ttl);
+    }
+
+    for _ in 0..nscount {
+        let name_end = skip_name(packet, offset)?;
+        if name_end + 10 > packet.len() {
+            return None;
+        }
+        let rtype = u16::from_be_bytes([packet[name_end], packet[name_end + 1]]);
+        let ttl = u32::from_be_bytes(packet[name_end + 4..name_end + 8].try_into().ok()?);
+        let rdlength = u16::from_be_bytes([packet[name_end + 8], packet[name_end + 9]]) as usize;
+        let rdata_start = name_end + 10;
+        let rdata_end = rdata_start + rdlength;
+        if rdata_end > packet.len() {
+            return None;
+        }
+
+        if rtype == 6 {
+            let mname_end = skip_name(packet, rdata_start)?;
+            let rname_end = skip_name(packet, mname_end)?;
+            if rname_end + 20 > rdata_end {
+                return None;
+            }
+            let minimum =
+                u32::from_be_bytes(packet[rname_end + 16..rname_end + 20].try_into().ok()?);
+            let negative_ttl = ttl.min(minimum);
+            return (negative_ttl > 0).then_some(negative_ttl);
+        }
+        offset = rdata_end;
+    }
+
+    None
+}
+
+pub fn age_response_ttls(packet: &mut [u8], elapsed: Duration, stale: bool) -> bool {
+    if packet.len() < 12 {
+        return false;
+    }
+
+    let qdcount = u16::from_be_bytes([packet[4], packet[5]]) as usize;
+    let record_count = usize::from(u16::from_be_bytes([packet[6], packet[7]]))
+        + usize::from(u16::from_be_bytes([packet[8], packet[9]]));
+    let mut offset = 12;
+
+    for _ in 0..qdcount {
+        let Some(name_end) = skip_name(packet, offset) else {
+            return false;
+        };
+        offset = name_end + 4;
+        if offset > packet.len() {
+            return false;
+        }
+    }
+
+    let elapsed = elapsed.as_secs().min(u64::from(u32::MAX)) as u32;
+    for _ in 0..record_count {
+        let Some(name_end) = skip_name(packet, offset) else {
+            return false;
+        };
+        if name_end + 10 > packet.len() {
+            return false;
+        }
+        let ttl_offset = name_end + 4;
+        let ttl = u32::from_be_bytes(
+            packet[ttl_offset..ttl_offset + 4]
+                .try_into()
+                .expect("TTL slice has four bytes"),
+        );
+        let remaining = if stale {
+            0
+        } else {
+            ttl.saturating_sub(elapsed)
+        };
+        packet[ttl_offset..ttl_offset + 4].copy_from_slice(&remaining.to_be_bytes());
+
+        let rdlength = u16::from_be_bytes([packet[name_end + 8], packet[name_end + 9]]) as usize;
+        offset = name_end + 10 + rdlength;
+        if offset > packet.len() {
+            return false;
+        }
+    }
+
+    true
 }
 
 /// Parsed representation of an EDNS0 OPT pseudo-RR (RFC 6891).
