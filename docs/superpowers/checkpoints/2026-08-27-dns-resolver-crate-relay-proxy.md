@@ -36,13 +36,17 @@
   removed.
 - Task 8 is complete: both repositories pass their final verification sequences
   and were clean before this final checkpoint update.
+- Post-plan relay performance follow-up is complete: equal-priority providers
+  now share requests round-robin, transport/HTTP failures cool down for 15
+  seconds, lower-priority providers remain fallback, and per-provider
+  in-flight/success/failure/latency state is recorded in structured logs.
 
 ## Verified Commits
 
 - `dns-relay`: the latest commit containing this checkpoint; Task 1 is the
   `chore: make dns resolver crates publishable` commit.
 - `relay-proxy`: Task 5 is commit `4bf6f8a`; Task 6 is commit `adfb9d8`; Task 7
-  is commit `943b2b7`.
+  is commit `943b2b7`; relay-pool balancing is commit `00be5c8`.
 
 ## Verification
 
@@ -97,6 +101,13 @@
 - Task 8 relay-proxy GREEN: formatting passed, all 10 tests passed, strict
   Clippy passed, the cached `release-perf` build completed, only reqwest 0.12.28
   was present, and diff/status checks were clean.
+- Relay-pool RED: tests could not compile because no shared provider pool or
+  pool-aware relay boundary existed.
+- Relay-pool GREEN: loopback integration tests observed `abcabc` distribution
+  across three equal-priority Workers, a failed Worker was contacted once
+  during cooldown, and a higher-priority failure reached the lower-priority
+  provider. All 11 tests, strict Clippy, formatting, diff checks, and the
+  `release-perf` build passed.
 
 ## Resume Here
 
