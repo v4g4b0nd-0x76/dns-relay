@@ -3,7 +3,7 @@ resolver = "3"
 members = ["dns_relay", "resolver_proxy", "shared"]
 
 [workspace.package]
-version = "1.6.7"
+version = "1.6.8"
 
 [profile.release]
 opt-level = "z"
