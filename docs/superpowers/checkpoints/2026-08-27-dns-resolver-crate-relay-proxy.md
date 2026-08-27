@@ -34,6 +34,8 @@
   rules taking priority, duplicate per-port catch-alls are rejected, relay
   providers are sorted once, and small per-connection allocations/logging were
   removed.
+- Task 8 is complete: both repositories pass their final verification sequences
+  and were clean before this final checkpoint update.
 
 ## Verified Commits
 
@@ -89,15 +91,23 @@
 - Task 7 GREEN: all 10 tests passed, including specific-over-catch-all routing,
   duplicate validation, sorted providers, and provider fallback; strict Clippy
   and the `release-perf` build passed.
+- Task 8 dns-relay GREEN: formatting passed, 74 tests passed with 1 ignored,
+  strict Clippy passed, `dns-relay-shared` packaged and verified 15 files,
+  metadata completed, and diff/status checks were clean.
+- Task 8 relay-proxy GREEN: formatting passed, all 10 tests passed, strict
+  Clippy passed, the cached `release-perf` build completed, only reqwest 0.12.28
+  was present, and diff/status checks were clean.
 
 ## Resume Here
 
-1. Read the design specification at
-   `docs/superpowers/specs/2026-08-27-dns-resolver-crate-relay-proxy-design.md`.
-2. Read
-   `docs/superpowers/plans/2026-08-27-dns-resolver-crate-relay-proxy.md`.
-3. Start Task 8 with the clean cross-repository verification sequences.
+1. Add a crates.io publish token to the GitHub repository secret
+   `CARGO_REGISTRY_TOKEN`.
+2. From `dns-relay`, run `PUSH=1 make patch` when ready to publish the first
+   internal/public crate pair through GitHub Actions.
+3. If that registry publication fails permanently, vendor the dns-relay source
+   under `relay-proxy` and change its existing path dependency; the current
+   sibling path already keeps local builds independent of crates.io.
 
 ## Remaining Phases
 
-1. Final cross-repository verification and documentation.
+None.
