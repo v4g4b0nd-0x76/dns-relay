@@ -14,7 +14,10 @@ use socket2::{Domain, Protocol, Socket, Type};
 pub use crate::errors::*;
 use crate::{
     cache::ResponseCache,
-    constants::{DNS_PROBE_PACKET, DOH_CONNECT_TIMEOUT, RESOLVE_TIMEOUT, SOCKET_RCVBUF_BYTES},
+    constants::{
+        DNS_PROBE_PACKET, DOH_CONNECT_TIMEOUT, RESOLVE_TIMEOUT, SOCKET_RCVBUF_BYTES,
+        SOCKET_SNDBUF_BYTES,
+    },
 };
 use aes_gcm::{
     Aes256Gcm,
@@ -77,6 +80,9 @@ pub fn bind_udp_socket(addr: &str) -> Result<UdpSocket, Error> {
     // Without this, packets are dropped by the kernel before recv_from ever sees them.
     if let Err(e) = socket.set_recv_buffer_size(SOCKET_RCVBUF_BYTES) {
         tracing::warn!("failed to set SO_RCVBUF to {SOCKET_RCVBUF_BYTES}: {e}");
+    }
+    if let Err(e) = socket.set_send_buffer_size(SOCKET_SNDBUF_BYTES) {
+        tracing::warn!("failed to set SO_SNDBUF to {SOCKET_SNDBUF_BYTES}: {e}");
     }
     socket.set_reuse_address(true).ok();
 

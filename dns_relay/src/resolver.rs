@@ -1,6 +1,6 @@
 use shared::{
-    build_http_client,
-    constants::{DNS_PROBE_PACKET, RESOLVE_TIMEOUT},
+    bind_udp_socket, build_http_client,
+    constants::{DNS_PROBE_PACKET, RECV_BATCH_MAX, RESOLVE_TIMEOUT},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -8,16 +8,16 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     str::FromStr,
     sync::{
-        Arc, LazyLock, OnceLock, RwLock,
-        atomic::{AtomicBool, Ordering},
+        Arc, LazyLock, Mutex, OnceLock, RwLock,
+        atomic::{AtomicBool, AtomicU16, Ordering},
     },
     time::Duration,
 };
 use tokio::{
     net::UdpSocket,
-    sync::Semaphore,
+    sync::{Semaphore, oneshot},
     task::JoinSet,
-    time::{Instant, MissedTickBehavior, interval, timeout},
+    time::{Instant, MissedTickBehavior, interval, sleep, timeout},
 };
 
 use crate::{
@@ -38,6 +38,142 @@ const SOURCE_FETCH_CONCURRENCY: usize = 8;
 const MAX_HEALTHY_RESOLVERS: usize = 256;
 const FAILED_RESOLVER_CAP: usize = 4096;
 const FAILED_RESOLVER_FLUSH_INTERVAL: Duration = Duration::from_secs(3600);
+
+struct PendingUdp {
+    upstream: SocketAddr,
+    reply: oneshot::Sender<Vec<u8>>,
+}
+
+struct PendingGuard {
+    id: u16,
+    pending: Arc<Mutex<HashMap<u16, PendingUdp>>>,
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(&self.id);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct UdpDispatcher {
+    socket: Arc<UdpSocket>,
+    pending: Arc<Mutex<HashMap<u16, PendingUdp>>>,
+    next_id: Arc<AtomicU16>,
+}
+
+impl UdpDispatcher {
+    pub fn new() -> Result<Self, Error> {
+        let dispatcher = Self {
+            socket: Arc::new(bind_udp_socket("0.0.0.0:0")?),
+            pending: Arc::new(Mutex::new(HashMap::with_capacity(512))),
+            next_id: Arc::new(AtomicU16::new(0)),
+        };
+        dispatcher.spawn_receiver();
+        Ok(dispatcher)
+    }
+
+    fn spawn_receiver(&self) {
+        let socket = Arc::clone(&self.socket);
+        let pending = Arc::clone(&self.pending);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            loop {
+                let (len, source) = match socket.recv_from(&mut buf).await {
+                    Ok(received) => received,
+                    Err(err) => {
+                        warn!("upstream UDP receive failed: {err}");
+                        tokio::task::yield_now().await;
+                        continue;
+                    }
+                };
+                Self::dispatch_reply(&pending, &buf[..len], source);
+
+                for _ in 1..RECV_BATCH_MAX {
+                    match socket.try_recv_from(&mut buf) {
+                        Ok((len, source)) => {
+                            Self::dispatch_reply(&pending, &buf[..len], source);
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(err) => {
+                            warn!("upstream UDP batch receive failed: {err}");
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn dispatch_reply(
+        pending: &Mutex<HashMap<u16, PendingUdp>>,
+        packet: &[u8],
+        source: SocketAddr,
+    ) {
+        if packet.len() < 2 {
+            return;
+        }
+        let id = u16::from_be_bytes([packet[0], packet[1]]);
+        let entry = pending
+            .lock()
+            .ok()
+            .and_then(|mut entries| {
+                (entries.get(&id)?.upstream == source).then(|| entries.remove(&id))
+            })
+            .flatten();
+        if let Some(entry) = entry {
+            let _ = entry.reply.send(packet.to_vec());
+        }
+    }
+
+    pub async fn resolve(
+        &self,
+        payload: &[u8],
+        upstream: SocketAddr,
+    ) -> Result<(Vec<u8>, usize), Error> {
+        let (reply, receiver) = oneshot::channel();
+        let id = {
+            let mut pending = self
+                .pending
+                .lock()
+                .map_err(|_| Error::Other("upstream UDP pending map poisoned".into()))?;
+            let mut id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            while pending.contains_key(&id) {
+                id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            }
+            pending.insert(id, PendingUdp { upstream, reply });
+            id
+        };
+        let _guard = PendingGuard {
+            id,
+            pending: Arc::clone(&self.pending),
+        };
+
+        let mut query = payload.to_vec();
+        if query.len() < 2 {
+            return Err(Error::Other(
+                "DNS payload is shorter than transaction ID".into(),
+            ));
+        }
+        query[..2].copy_from_slice(&id.to_be_bytes());
+        self.socket.send_to(&query, upstream).await?;
+        let packet = receiver
+            .await
+            .map_err(|_| Error::Other("upstream UDP dispatcher stopped".into()))?;
+        let len = packet.len();
+        Ok((packet, len))
+    }
+
+    #[cfg(test)]
+    fn pending_len(&self) -> usize {
+        self.pending
+            .lock()
+            .map(|pending| pending.len())
+            .unwrap_or(0)
+    }
+}
 
 /// Run `f` over `items` with at most `limit` tasks in flight (no futures-rs needed).
 async fn collect_concurrent<I, T, F, Fut, R>(items: I, limit: usize, f: F) -> Vec<R>
@@ -163,6 +299,46 @@ impl ResolverPicker {
         }
         self.pick()
     }
+
+    pub fn candidates(&self, prefer_doh: bool) -> Vec<Resolver> {
+        let mut resolvers = self.healthy_resolvers.read().unwrap().clone();
+        if prefer_doh {
+            resolvers
+                .sort_unstable_by_key(|(addr, latency)| (!addr.starts_with("https://"), *latency));
+        } else {
+            resolvers.sort_unstable_by_key(|(_, latency)| *latency);
+        }
+        resolvers.truncate(2);
+        resolvers
+    }
+
+    pub async fn resolve_packet(
+        &self,
+        payload: &[u8],
+        src_addr: SocketAddr,
+        prefer_doh: bool,
+        http: &reqwest::Client,
+        doq_pool: &DoqPool,
+        udp_dispatcher: &UdpDispatcher,
+    ) -> Result<Vec<u8>, Error> {
+        let candidates = self.candidates(prefer_doh);
+        let primary = candidates.first().ok_or(Error::NoHealthyResolvers)?;
+        let secondary = candidates.get(1);
+        timeout(
+            RESOLVE_TIMEOUT,
+            resolve_candidates(
+                payload,
+                src_addr,
+                primary,
+                secondary,
+                http,
+                doq_pool,
+                udp_dispatcher,
+            ),
+        )
+        .await
+        .map_err(|_| Error::ResolveTimeout)?
+    }
     pub async fn resolve(
         &self,
         domain: &str,
@@ -186,6 +362,103 @@ impl ResolverPicker {
     }
 }
 
+fn hedge_delay(rtt: Duration) -> Duration {
+    rtt.saturating_mul(2)
+        .clamp(Duration::from_millis(25), Duration::from_millis(250))
+}
+
+async fn resolve_candidates(
+    payload: &[u8],
+    src_addr: SocketAddr,
+    primary: &Resolver,
+    secondary: Option<&Resolver>,
+    http: &reqwest::Client,
+    doq_pool: &DoqPool,
+    udp_dispatcher: &UdpDispatcher,
+) -> Result<Vec<u8>, Error> {
+    let mut primary_query = Box::pin(resolve_candidate(
+        payload,
+        &primary.0,
+        src_addr,
+        http,
+        doq_pool,
+        udp_dispatcher,
+    ));
+    let Some(secondary) = secondary else {
+        return primary_query.await;
+    };
+    let mut hedge = Box::pin(sleep(hedge_delay(primary.1)));
+
+    tokio::select! {
+        primary_result = &mut primary_query => match primary_result {
+            Ok(packet) => Ok(packet),
+            Err(_) => resolve_candidate(
+                payload,
+                &secondary.0,
+                src_addr,
+                http,
+                doq_pool,
+                udp_dispatcher,
+            ).await,
+        },
+        _ = &mut hedge => {
+            let mut secondary_query = Box::pin(resolve_candidate(
+                payload,
+                &secondary.0,
+                src_addr,
+                http,
+                doq_pool,
+                udp_dispatcher,
+            ));
+            tokio::select! {
+                primary_result = &mut primary_query => match primary_result {
+                    Ok(packet) => Ok(packet),
+                    Err(_) => secondary_query.await,
+                },
+                secondary_result = &mut secondary_query => match secondary_result {
+                    Ok(packet) => Ok(packet),
+                    Err(_) => primary_query.await,
+                },
+            }
+        }
+    }
+}
+
+async fn resolve_candidate(
+    payload: &[u8],
+    resolver: &str,
+    src_addr: SocketAddr,
+    http: &reqwest::Client,
+    doq_pool: &DoqPool,
+    udp_dispatcher: &UdpDispatcher,
+) -> Result<Vec<u8>, Error> {
+    let (packet, _) = resolve_from_upstream_inner(
+        payload,
+        resolver,
+        src_addr,
+        http,
+        doq_pool,
+        Some(udp_dispatcher),
+    )
+    .await?;
+    if is_usable_response(&packet) {
+        Ok(packet)
+    } else {
+        Err(Error::Other(format!(
+            "resolver {resolver} returned an unusable DNS response"
+        )))
+    }
+}
+
+fn is_usable_response(packet: &[u8]) -> bool {
+    if packet.len() < 12 {
+        return false;
+    }
+    let flags = u16::from_be_bytes([packet[2], packet[3]]);
+    let rcode = flags & 0x000F;
+    flags & 0x8000 != 0 && flags & 0x0200 == 0 && rcode != 2 && rcode != 5
+}
+
 #[inline(always)]
 pub async fn resolve_from_upstream(
     payload: &[u8],
@@ -193,6 +466,17 @@ pub async fn resolve_from_upstream(
     src_addr: SocketAddr,
     http: &reqwest::Client,
     doq_pool: &DoqPool,
+) -> Result<(Vec<u8>, usize), Error> {
+    resolve_from_upstream_inner(payload, upstream_resolver, src_addr, http, doq_pool, None).await
+}
+
+async fn resolve_from_upstream_inner(
+    payload: &[u8],
+    upstream_resolver: &str,
+    src_addr: SocketAddr,
+    http: &reqwest::Client,
+    doq_pool: &DoqPool,
+    udp_dispatcher: Option<&UdpDispatcher>,
 ) -> Result<(Vec<u8>, usize), Error> {
     let final_payload = set_ecs_option(payload, src_addr, None).unwrap_or_else(|| payload.to_vec());
 
@@ -206,6 +490,11 @@ pub async fn resolve_from_upstream(
     let upstream_addr: SocketAddr = upstream_resolver
         .parse()
         .map_err(|_| Error::InvalidResolver(upstream_resolver.to_owned()))?;
+    if upstream_addr.is_ipv4()
+        && let Some(udp_dispatcher) = udp_dispatcher
+    {
+        return udp_dispatcher.resolve(&final_payload, upstream_addr).await;
+    }
     let bind_addr = if upstream_addr.is_ipv4() {
         "0.0.0.0:0"
     } else {
@@ -491,21 +780,11 @@ fn merge_discovered_into_healthy(
     discovered: Vec<Resolver>,
     max_len: usize,
 ) {
-    let existing: HashSet<&str> = healthy.iter().map(|(addr, _)| addr.as_str()).collect();
-    let mut prepend = Vec::with_capacity(discovered.len());
-    for resolver in discovered {
-        if !existing.contains(resolver.0.as_str()) {
-            prepend.push(resolver);
-        }
-    }
-    if prepend.is_empty() {
-        return;
-    }
-    prepend.append(healthy);
-    if prepend.len() > max_len {
-        prepend.truncate(max_len);
-    }
-    *healthy = prepend;
+    healthy.extend(discovered);
+    healthy.sort_unstable_by_key(|(_, latency)| *latency);
+    let mut seen = HashSet::with_capacity(healthy.len());
+    healthy.retain(|(addr, _)| seen.insert(addr.clone()));
+    healthy.truncate(max_len);
 }
 
 async fn fetch_resolvers_from_addr(
@@ -799,6 +1078,7 @@ fn parse_doq_target(resolver: &str) -> Result<(String, SocketAddr), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dns::{craft_redirect_response, parse_a_records, parse_domain};
     use std::{
         sync::{
             Arc, Barrier,
@@ -807,6 +1087,169 @@ mod tests {
         thread,
         time::Duration,
     };
+
+    async fn reply_with_marker(socket: UdpSocket, marker: u8, delay: Duration) {
+        let mut buf = [0u8; 512];
+        let (len, peer) = socket.recv_from(&mut buf).await.unwrap();
+        tokio::time::sleep(delay).await;
+        let mut response = buf[..len].to_vec();
+        response[2] |= 0x80;
+        response.push(marker);
+        socket.send_to(&response, peer).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatcher_demultiplexes_identical_client_txids() {
+        let dispatcher = UdpDispatcher::new().unwrap();
+        let first = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let second = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let first_addr = first.local_addr().unwrap();
+        let second_addr = second.local_addr().unwrap();
+        let first_task = tokio::spawn(reply_with_marker(first, 1, Duration::from_millis(20)));
+        let second_task = tokio::spawn(reply_with_marker(second, 2, Duration::ZERO));
+
+        let (first_reply, second_reply) = tokio::join!(
+            dispatcher.resolve(DNS_PROBE_PACKET, first_addr),
+            dispatcher.resolve(DNS_PROBE_PACKET, second_addr)
+        );
+        assert_eq!(first_reply.unwrap().0.last(), Some(&1));
+        assert_eq!(second_reply.unwrap().0.last(), Some(&2));
+        assert_eq!(dispatcher.pending_len(), 0);
+        first_task.await.unwrap();
+        second_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatcher_cancellation_removes_pending_request() {
+        let dispatcher = UdpDispatcher::new().unwrap();
+        let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let result = timeout(
+            Duration::from_millis(20),
+            dispatcher.resolve(DNS_PROBE_PACKET, blackhole.local_addr().unwrap()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(dispatcher.pending_len(), 0);
+    }
+
+    async fn answer_with_ip(socket: UdpSocket, ip: &str, delay: Duration) {
+        let mut buf = [0u8; 512];
+        let (len, peer) = socket.recv_from(&mut buf).await.unwrap();
+        tokio::time::sleep(delay).await;
+        let (_, qname_end) = parse_domain(&buf[..len], 12).unwrap();
+        let answer = craft_redirect_response(&buf[..len], qname_end, vec![ip]).unwrap();
+        socket.send_to(&answer, peer).await.unwrap();
+    }
+
+    #[test]
+    fn hedge_candidates_are_latency_ordered_and_bounded() {
+        let picker = ResolverPicker::from_healthy(vec![
+            ("127.0.0.1:5303".into(), Duration::from_millis(80)),
+            ("127.0.0.1:5301".into(), Duration::from_millis(10)),
+            ("127.0.0.1:5302".into(), Duration::from_millis(40)),
+        ]);
+
+        let candidates = picker.candidates(false);
+        assert_eq!(
+            resolvers_to_addrs(&candidates),
+            ["127.0.0.1:5301", "127.0.0.1:5302"]
+        );
+        assert_eq!(hedge_delay(candidates[0].1), Duration::from_millis(25));
+        assert_eq!(
+            hedge_delay(Duration::from_millis(80)),
+            Duration::from_millis(160)
+        );
+        assert_eq!(
+            hedge_delay(Duration::from_secs(1)),
+            Duration::from_millis(250)
+        );
+    }
+
+    #[tokio::test]
+    async fn hedge_secondary_wins_when_primary_is_slow() {
+        let primary = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let secondary = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let picker = ResolverPicker::from_healthy(vec![
+            (
+                primary.local_addr().unwrap().to_string(),
+                Duration::from_millis(10),
+            ),
+            (
+                secondary.local_addr().unwrap().to_string(),
+                Duration::from_millis(20),
+            ),
+        ]);
+        let primary_task = tokio::spawn(answer_with_ip(
+            primary,
+            "1.1.1.1",
+            Duration::from_millis(500),
+        ));
+        let secondary_task = tokio::spawn(answer_with_ip(secondary, "2.2.2.2", Duration::ZERO));
+        let dispatcher = UdpDispatcher::new().unwrap();
+        let http = reqwest::Client::new();
+        let doq_pool = DoqPool::new();
+
+        let started = Instant::now();
+        let response = picker
+            .resolve_packet(
+                DNS_PROBE_PACKET,
+                "127.0.0.1:53000".parse().unwrap(),
+                false,
+                &http,
+                &doq_pool,
+                &dispatcher,
+            )
+            .await
+            .unwrap();
+        assert_eq!(parse_a_records(&response), [Ipv4Addr::new(2, 2, 2, 2)]);
+        assert!(started.elapsed() < Duration::from_millis(300));
+        assert_eq!(dispatcher.pending_len(), 0);
+
+        primary_task.abort();
+        let _ = primary_task.await;
+        secondary_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn hedge_fast_primary_skips_secondary() {
+        let primary = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let secondary = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let picker = ResolverPicker::from_healthy(vec![
+            (
+                primary.local_addr().unwrap().to_string(),
+                Duration::from_millis(20),
+            ),
+            (
+                secondary.local_addr().unwrap().to_string(),
+                Duration::from_millis(30),
+            ),
+        ]);
+        let primary_task = tokio::spawn(answer_with_ip(primary, "1.1.1.1", Duration::ZERO));
+        let dispatcher = UdpDispatcher::new().unwrap();
+
+        let response = picker
+            .resolve_packet(
+                DNS_PROBE_PACKET,
+                "127.0.0.1:53000".parse().unwrap(),
+                false,
+                &reqwest::Client::new(),
+                &DoqPool::new(),
+                &dispatcher,
+            )
+            .await
+            .unwrap();
+        assert_eq!(parse_a_records(&response), [Ipv4Addr::new(1, 1, 1, 1)]);
+        assert!(
+            timeout(Duration::from_millis(80), async {
+                let mut buf = [0u8; 512];
+                secondary.recv_from(&mut buf).await
+            })
+            .await
+            .is_err()
+        );
+        primary_task.await.unwrap();
+    }
 
     #[test]
     fn classify_line_respects_ipv4_and_doh_flags() {
@@ -861,20 +1304,27 @@ garbage
     }
 
     #[test]
-    fn merge_discovered_prepends_dedups_and_caps() {
-        let mut healthy = vec![create_resolver("old-a"), create_resolver("old-b")];
+    fn merge_discovered_sorts_dedups_and_caps() {
+        let mut healthy = vec![
+            ("old-a".into(), Duration::from_millis(30)),
+            ("old-b".into(), Duration::from_millis(40)),
+        ];
         merge_discovered_into_healthy(
             &mut healthy,
             vec![
-                create_resolver("fast"),
-                create_resolver("old-a"),
-                create_resolver("mid"),
+                ("slow-new".into(), Duration::from_millis(80)),
+                ("old-a".into(), Duration::from_millis(20)),
+                ("fast-new".into(), Duration::from_millis(10)),
             ],
             3,
         );
         assert_eq!(
             resolvers_to_addrs(&healthy),
-            vec!["fast".to_string(), "mid".to_string(), "old-a".to_string()]
+            vec![
+                "fast-new".to_string(),
+                "old-a".to_string(),
+                "old-b".to_string()
+            ]
         );
     }
 

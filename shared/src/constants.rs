@@ -6,6 +6,7 @@ pub const CACHE_TTL_MIN: Duration = Duration::from_secs(1);
 pub const CACHE_TTL_MAX: Duration = Duration::from_secs(3600);
 pub const CACHE_STALE_TTL: Duration = Duration::from_secs(300);
 pub const SOCKET_RCVBUF_BYTES: usize = 4 * 1024 * 1024; // 4MB
+pub const SOCKET_SNDBUF_BYTES: usize = 4 * 1024 * 1024;
 pub const RESOLVE_SEMAPHORE: usize = 512; // was likely 64/128 — raise it
 pub const BACKLOG_CAPACITY: usize = 1024; // bounded, ~2x semaphore size
 pub const PAYLOAD_BUF_SIZE: usize = 1024;
