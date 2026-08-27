@@ -30,12 +30,17 @@
 - Task 6 is complete: direct HTTPS now tunnels untouched TLS bytes, while CA
   generation/trust installation and TLS termination remain only for HTTP relay
   rules.
+- Task 7 is complete: catch-all rules cover configured listeners with specific
+  rules taking priority, duplicate per-port catch-alls are rejected, relay
+  providers are sorted once, and small per-connection allocations/logging were
+  removed.
 
 ## Verified Commits
 
 - `dns-relay`: the latest commit containing this checkpoint; Task 1 is the
   `chore: make dns resolver crates publishable` commit.
-- `relay-proxy`: Task 5 is commit `4bf6f8a`; Task 6 is commit `adfb9d8`.
+- `relay-proxy`: Task 5 is commit `4bf6f8a`; Task 6 is commit `adfb9d8`; Task 7
+  is commit `943b2b7`.
 
 ## Verification
 
@@ -79,6 +84,11 @@
 - Task 6 GREEN: direct TLS bytes round-tripped unchanged, direct rules reported
   no CA requirement, and a relay TLS acceptor completed a trusted handshake;
   all 5 tests, strict Clippy, and the `release-perf` build passed.
+- Task 7 RED: catch-all validation was absent and provider priority was not
+  stored in startup order.
+- Task 7 GREEN: all 10 tests passed, including specific-over-catch-all routing,
+  duplicate validation, sorted providers, and provider fallback; strict Clippy
+  and the `release-perf` build passed.
 
 ## Resume Here
 
@@ -86,10 +96,8 @@
    `docs/superpowers/specs/2026-08-27-dns-resolver-crate-relay-proxy-design.md`.
 2. Read
    `docs/superpowers/plans/2026-08-27-dns-resolver-crate-relay-proxy.md`.
-3. Start Task 7 in `relay-proxy` by adding catch-all rule, validation, and relay
-   provider-order/fallback tests.
+3. Start Task 8 with the clean cross-repository verification sequences.
 
 ## Remaining Phases
 
-1. Catch-all rules and relay hot-path cleanup.
-2. Final cross-repository verification and documentation.
+1. Final cross-repository verification and documentation.
