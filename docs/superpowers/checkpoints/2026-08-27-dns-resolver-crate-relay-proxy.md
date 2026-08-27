@@ -24,12 +24,15 @@
 - Task 4 is complete: version tags verify the workspace and publish the internal
   crate before the public crate; CI now checks all workspace targets; release
   setup and programmatic usage are documented.
+- Task 5 is complete: `relay-proxy` constructs one shared `DnsResolver`, uses it
+  for every domain upstream, bypasses it for socket-address literals, and has no
+  operating-system DNS fallback.
 
 ## Verified Commits
 
 - `dns-relay`: the latest commit containing this checkpoint; Task 1 is the
   `chore: make dns resolver crates publishable` commit.
-- `relay-proxy`: no task commits yet.
+- `relay-proxy`: Task 5 is commit `4bf6f8a`.
 
 ## Verification
 
@@ -63,6 +66,13 @@
 - Task 4 GREEN: workflow YAML and `scripts/bump.sh` parsed; formatting, 74 tests
   with 1 ignored, strict Clippy, internal-crate packaging, and Cargo metadata all
   passed. No tag was pushed and no local publication was attempted.
+- Task 5 RED: relay-proxy tests failed because the dns dependency, `[dns]`
+  configuration, and resolver-backed `resolve_upstream` did not exist.
+- Task 5 dependency correction: reqwest 0.12 has no `query` feature, so the
+  invalid feature was removed while retaining its query API.
+- Task 5 GREEN: `cargo test --all-targets` passed 2 tests, strict Clippy passed,
+  and `cargo tree -d` showed one reqwest version (0.12.28). The local source path
+  remains paired with `version = "1"` for registry portability.
 
 ## Resume Here
 
@@ -70,12 +80,11 @@
    `docs/superpowers/specs/2026-08-27-dns-resolver-crate-relay-proxy-design.md`.
 2. Read
    `docs/superpowers/plans/2026-08-27-dns-resolver-crate-relay-proxy.md`.
-3. Start Task 5 in `relay-proxy` by adding failing DNS configuration and
-   resolver-backed upstream tests.
+3. Start Task 6 in `relay-proxy` by adding direct TLS tunnel and conditional-CA
+   tests.
 
 ## Remaining Phases
 
-1. `relay-proxy` dependency, DNS configuration, and fail-closed upstream lookup.
-2. Direct TLS tunnel and conditional CA initialization.
-3. Catch-all rules and relay hot-path cleanup.
-4. Final cross-repository verification and documentation.
+1. Direct TLS tunnel and conditional CA initialization.
+2. Catch-all rules and relay hot-path cleanup.
+3. Final cross-repository verification and documentation.
