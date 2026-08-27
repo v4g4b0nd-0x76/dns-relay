@@ -260,14 +260,12 @@ A dedicated workflow runs on pushed `v*` tags. It:
 
 1. Verifies that the tag exactly matches the workspace package version.
 2. Runs formatting, workspace tests, and strict Clippy.
-3. Runs `cargo package` for `dns-relay-shared` and
-   `cargo package -p dns_relay --no-verify` for the public crate. Full
-   verification of the public package cannot resolve its new registry
-   dependency before the internal package's first publication.
+3. Runs `cargo package` for `dns-relay-shared`.
 4. Publishes `dns-relay-shared`.
 5. Waits with a bounded retry for that exact internal version to appear in the
    registry index.
-6. Publishes `dns_relay`.
+6. Packages and publishes `dns_relay`; Cargo can now resolve and fully verify
+   its internal registry dependency.
 
 Publishing authenticates with the scoped GitHub repository secret
 `CARGO_REGISTRY_TOKEN`. The token is never printed, stored in configuration, or
@@ -302,7 +300,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo package -p dns-relay-shared
-cargo package -p dns_relay --no-verify
+cargo metadata --no-deps --format-version 1
 ```
 
 and in `relay-proxy`:
@@ -314,10 +312,13 @@ cargo clippy --all-targets -- -D warnings
 cargo build --profile release-perf
 ```
 
-After GitHub publishes `dns-relay-shared` and observes it in the registry index,
-`cargo publish -p dns_relay` performs Cargo's full extracted-package build before
-upload. The workflow is syntax-checked locally; actual publication is validated
-by GitHub Actions because a crates.io release is permanent external state.
+Cargo refuses to prepare `dns_relay` before the first internal crate version is
+present in the registry, even with `--no-verify`; this expected first-release
+constraint is recorded rather than suppressed. After GitHub publishes
+`dns-relay-shared` and observes it in the registry index, `cargo package` and
+`cargo publish -p dns_relay` perform the full extracted-package build. The
+workflow is syntax-checked locally; actual publication is validated by GitHub
+Actions because a crates.io release is permanent external state.
 
 ## Checkpoints And Resume Safety
 

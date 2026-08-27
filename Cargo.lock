@@ -419,14 +419,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "dns-relay-shared"
+version = "1.6.8"
+dependencies = [
+ "aes-gcm",
+ "base64 0.21.7",
+ "chacha20poly1305",
+ "file-rotate",
+ "lru",
+ "rand",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "socket2 0.5.10",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dns_relay"
-version = "1.6.6"
+version = "1.6.8"
 dependencies = [
  "aes-gcm",
  "arc-swap",
  "base64 0.21.7",
  "clap",
  "crossbeam-queue",
+ "dns-relay-shared",
  "hmac",
  "libc",
  "quinn",
@@ -436,7 +458,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "shared",
  "socket2 0.5.10",
  "tempfile",
  "tokio",
@@ -1316,15 +1337,15 @@ dependencies = [
 
 [[package]]
 name = "resolver_proxy"
-version = "1.6.6"
+version = "1.6.8"
 dependencies = [
  "arc-swap",
  "clap",
+ "dns-relay-shared",
  "reqwest",
  "rustls",
  "serde",
  "serde_json",
- "shared",
  "socket2 0.5.10",
  "tempfile",
  "tokio",
@@ -1596,27 +1617,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
-]
-
-[[package]]
-name = "shared"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "base64 0.21.7",
- "chacha20poly1305",
- "file-rotate",
- "lru",
- "rand",
- "reqwest",
- "serde",
- "serde_json",
- "socket2 0.5.10",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
 ]
 
 [[package]]

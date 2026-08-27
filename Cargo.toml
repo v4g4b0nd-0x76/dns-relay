@@ -4,6 +4,9 @@ members = ["dns_relay", "resolver_proxy", "shared"]
 
 [workspace.package]
 version = "1.6.8"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/v4g4b0nd-0x76/dns-hijacker"
 
 [profile.release]
 opt-level = "z"

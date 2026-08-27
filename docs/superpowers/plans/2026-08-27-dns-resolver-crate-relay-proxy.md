@@ -64,6 +64,7 @@
 - Modify: `/Users/vangabond/projects/dns-relay/Cargo.toml`
 - Modify: `/Users/vangabond/projects/dns-relay/shared/Cargo.toml`
 - Modify: `/Users/vangabond/projects/dns-relay/dns_relay/Cargo.toml`
+- Modify: `/Users/vangabond/projects/dns-relay/resolver_proxy/Cargo.toml`
 - Modify: `/Users/vangabond/projects/dns-relay/Cargo.lock`
 - Modify: `/Users/vangabond/projects/dns-relay/docs/superpowers/checkpoints/2026-08-27-dns-resolver-crate-relay-proxy.md`
 
@@ -131,6 +132,16 @@ Change its local dependency to:
 shared = { package = "dns-relay-shared", path = "../shared", version = "1" }
 ```
 
+Use the same aliased, versioned dependency in `resolver_proxy/Cargo.toml`.
+Declare every Tokio capability used by the standalone internal crate directly:
+
+```toml
+features = ["io-util", "net", "process", "rt", "sync", "time"]
+```
+
+This prevents workspace feature unification from masking missing features in
+the independently packaged crate.
+
 - [ ] **Step 4: Refresh the lock file and format manifests**
 
 Run:
@@ -141,7 +152,7 @@ rtk cargo check --workspace
 
 Expected: PASS and `Cargo.lock` names `dns-relay-shared` at workspace version `1.6.8`.
 
-- [ ] **Step 5: Verify both package archives**
+- [ ] **Step 5: Verify the internal archive and expected public bootstrap constraint**
 
 Run:
 
@@ -150,16 +161,17 @@ rtk cargo package -p dns-relay-shared --allow-dirty
 rtk cargo package -p dns_relay --allow-dirty --no-verify
 ```
 
-Expected: both `.crate` archives are created. The public package uses
-`--no-verify` only because its internal dependency has not had its first registry
-publication yet.
+Expected: the internal `.crate` archive is created and fully verified. The
+public command FAILS because `dns-relay-shared` has not had its first registry
+publication; Cargo checks normal registry dependencies even with `--no-verify`.
+GitHub performs that package check after publishing the internal crate.
 
 - [ ] **Step 6: Record and commit checkpoint 2**
 
 Update the checkpoint with the commands above, then run:
 
 ```bash
-rtk git add LICENSE Cargo.toml Cargo.lock shared/Cargo.toml dns_relay/Cargo.toml docs/superpowers/checkpoints/2026-08-27-dns-resolver-crate-relay-proxy.md
+rtk git add LICENSE Cargo.toml Cargo.lock shared/Cargo.toml dns_relay/Cargo.toml resolver_proxy/Cargo.toml docs/superpowers/specs/2026-08-27-dns-resolver-crate-relay-proxy-design.md docs/superpowers/plans/2026-08-27-dns-resolver-crate-relay-proxy.md docs/superpowers/checkpoints/2026-08-27-dns-resolver-crate-relay-proxy.md
 rtk git commit -m "chore: make dns resolver crates publishable"
 ```
 
@@ -450,7 +462,6 @@ Use these shell steps after checkout, stable-toolchain, and Cargo-cache steps:
 - name: Package crates
   run: |
     cargo package -p dns-relay-shared --locked
-    cargo package -p dns_relay --locked --no-verify
 - name: Publish internal crate
   run: cargo publish -p dns-relay-shared --locked
 - name: Wait for internal crate
@@ -463,7 +474,9 @@ Use these shell steps after checkout, stable-toolchain, and Cargo-cache steps:
     done
     exit 1
 - name: Publish public crate
-  run: cargo publish -p dns_relay --locked
+  run: |
+    cargo package -p dns_relay --locked
+    cargo publish -p dns_relay --locked
 ```
 
 Do not add `continue-on-error`, token output, or duplicate-version suppression.
@@ -508,7 +521,7 @@ rtk cargo fmt --all -- --check
 rtk cargo test --workspace
 rtk cargo clippy --workspace --all-targets -- -D warnings
 rtk cargo package -p dns-relay-shared --allow-dirty
-rtk cargo package -p dns_relay --allow-dirty --no-verify
+rtk cargo metadata --no-deps --format-version 1
 ```
 
 Expected: every local check PASS. Do not push a tag or publish from the local
@@ -856,7 +869,7 @@ rtk cargo fmt --all -- --check
 rtk cargo test --workspace
 rtk cargo clippy --workspace --all-targets -- -D warnings
 rtk cargo package -p dns-relay-shared --allow-dirty
-rtk cargo package -p dns_relay --allow-dirty --no-verify
+rtk cargo metadata --no-deps --format-version 1
 rtk git diff --check
 rtk git status --short
 ```
@@ -881,12 +894,12 @@ clean.
 - [ ] **Step 3: Inspect packaged public files**
 
 ```bash
-rtk cargo package -p dns_relay --allow-dirty --no-verify --list
 rtk cargo package -p dns-relay-shared --allow-dirty --list
 ```
 
-Expected: source, manifest, README, and license metadata are present; no config
-containing keys, logs, runtime state, or build output is packaged.
+Expected: internal source, manifest, and license metadata are present; no config
+containing keys, logs, runtime state, or build output is packaged. The public
+archive is inspected by GitHub after the internal crate reaches crates.io.
 
 - [ ] **Step 4: Write the final resume/publication checkpoint**
 

@@ -9,12 +9,16 @@
 - Written specification approved by the user.
 - First-release package verification ordering clarified before planning.
 - Checkpointed implementation plan written and self-reviewed.
-- Implementation has not started.
+- Task 1 packaging probe confirmed Cargo requires the internal crate to exist in
+  the registry before it will prepare the public crate.
+- Inline execution on both `master` branches was explicitly approved.
+- Task 1 is complete: both manifests are publishable, the internal crate
+  verifies independently, and the first-publication ordering is documented.
 
 ## Verified Commits
 
-- `dns-relay`: the commit containing this checkpoint and the design
-  specification.
+- `dns-relay`: the latest commit containing this checkpoint; Task 1 is the
+  `chore: make dns resolver crates publishable` commit.
 - `relay-proxy`: no task commits yet.
 
 ## Verification
@@ -23,6 +27,15 @@
   1 test was ignored.
 - Pre-design baseline: `cargo test --all-targets` in `relay-proxy` passed; the
   project currently contains no tests.
+- Task 1 RED: `cargo package -p dns_relay --allow-dirty --no-verify` failed
+  because `shared` had no registry version.
+- Task 1 diagnostic: standalone `dns-relay-shared` packaging exposed missing
+  Tokio features hidden by workspace feature unification.
+- Task 1 GREEN: `cargo check --workspace` passed.
+- Task 1 GREEN: `cargo package -p dns-relay-shared --allow-dirty` packaged and
+  verified 15 files.
+- Task 1 expected bootstrap constraint: public packaging now reaches crates.io
+  lookup and stops because `dns-relay-shared` has not been published yet.
 
 ## Resume Here
 
@@ -30,15 +43,14 @@
    `docs/superpowers/specs/2026-08-27-dns-resolver-crate-relay-proxy-design.md`.
 2. Read
    `docs/superpowers/plans/2026-08-27-dns-resolver-crate-relay-proxy.md`.
-3. Confirm which execution workflow the user selected.
-4. Do not edit production code before that selection.
+3. Start Task 2 by writing the failing `DnsResolver` API tests in
+   `dns_relay/src/client.rs`.
 
 ## Remaining Phases
 
-1. Publishable manifests, license, and package dry-runs.
-2. `DnsResolver` API and DNS-server integration.
-3. crates.io GitHub Action and library documentation.
-4. `relay-proxy` dependency, DNS configuration, and fail-closed upstream lookup.
-5. Direct TLS tunnel and conditional CA initialization.
-6. Catch-all rules and relay hot-path cleanup.
-7. Final cross-repository verification and documentation.
+1. `DnsResolver` API and DNS-server integration.
+2. crates.io GitHub Action and library documentation.
+3. `relay-proxy` dependency, DNS configuration, and fail-closed upstream lookup.
+4. Direct TLS tunnel and conditional CA initialization.
+5. Catch-all rules and relay hot-path cleanup.
+6. Final cross-repository verification and documentation.

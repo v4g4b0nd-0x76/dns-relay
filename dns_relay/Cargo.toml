@@ -2,6 +2,13 @@
 name = "dns_relay"
 version.workspace = true
 edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reusable encrypted DNS resolver and configurable DNS relay server"
+readme = "README.md"
+keywords = ["dns", "resolver", "doh", "doq", "relay"]
+categories = ["network-programming"]
 
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = [
@@ -45,7 +52,7 @@ rustls = { version = "0.23", default-features = false, features = [
 ] }
 webpki-roots = "0.26"
 crossbeam-queue = "0.3.13"
-shared = { path = "../shared" }
+shared = { package = "dns-relay-shared", path = "../shared", version = "1" }
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
