@@ -15,11 +15,11 @@ use tempfile::NamedTempFile;
 use tokio::{net::UdpSocket, time::timeout};
 
 use crate::{
-    cache::ResponseCache,
+    cache::{ResponseCache, cache_key_from_query_for_client, cache_store},
     conf::Conf,
     dns::{
         craft_nxdomain_response, craft_redirect_response, craft_servfail_response, min_answer_ttl,
-        parse_domain, set_ecs_option, with_txid,
+        parse_a_records, parse_domain, set_ecs_option, with_txid,
     },
     handler::{
         Flight, HandleQueryParams, HistoryBuffer, InFlightQueries, handle_query, resolve_query,
@@ -85,6 +85,14 @@ fn trie_from_conf(conf: &Conf) -> Arc<DomainTrie> {
 }
 
 #[test]
+fn hot_reload_default_poll_interval_is_one_second() {
+    assert_eq!(
+        crate::conf::HotreloadConf::default().poll_interval_ms,
+        1_000
+    );
+}
+
+#[test]
 fn parse_domain_from_mock_probe() {
     let (domain, qname_end) = parse_domain(mock_query_google(), 12).expect("parse");
     assert_eq!(domain, "google.com");
@@ -106,7 +114,7 @@ async fn in_flight_query_publishes_to_follower_and_cleans_up() {
 
     leader.publish(vec![0, 0, 1, 2, 3]);
     assert_eq!(follower.wait().await, Some(vec![0, 0, 1, 2, 3]));
-    assert_eq!(flights.len(), 0);
+    assert!(flights.is_empty());
 }
 
 #[test]
@@ -535,6 +543,54 @@ async fn concurrent_identical_misses_share_one_upstream_query() {
 }
 
 #[tokio::test]
+async fn upstream_failure_returns_stale_cached_answer() {
+    let query = mock_query_google().to_vec();
+    let src_addr = "127.0.0.1:53001".parse().unwrap();
+    let (_, qname_end) = parse_domain(&query, 12).unwrap();
+    let answer = craft_redirect_response(&query, qname_end, vec!["1.1.1.1"]).unwrap();
+    let cache = empty_cache();
+    let key = cache_key_from_query_for_client(&query, Some(src_addr)).unwrap();
+    cache_store(&cache, key.clone(), &answer);
+    {
+        let mut cache = cache.lock().unwrap();
+        let entry = cache.get_mut(&key).unwrap();
+        entry.fresh_until = Instant::now() - Duration::from_secs(1);
+        entry.stale_until = Instant::now() + Duration::from_secs(60);
+    }
+
+    let rule_trie = Arc::new(DomainTrie::build(&[], &[]));
+    let picker =
+        ResolverPicker::from_healthy(vec![("invalid-resolver".into(), Duration::from_millis(1))]);
+    let server_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let http = reqwest::Client::new();
+    let doq_pool = DoqPool::new();
+    let dispatcher = UdpDispatcher::new().unwrap();
+    let in_flight = Arc::new(InFlightQueries::new());
+    let is_vpn_active = Arc::new(AtomicBool::new(false));
+    let params = HandleQueryParams {
+        payload: &query,
+        src_addr,
+        rule_trie: &rule_trie,
+        resolver_picker: &picker,
+        server_socket: &server_socket,
+        http: &http,
+        cache: &cache,
+        relay_picker: None,
+        metric_wrapper: None,
+        is_vpn_active: &is_vpn_active,
+        doq_pool: &doq_pool,
+        history_buffer: None,
+        udp_dispatcher: &dispatcher,
+        in_flight: &in_flight,
+    };
+
+    let response = resolve_query(&params).await.unwrap();
+    assert_eq!(&response[..2], &query[..2]);
+    assert_eq!(parse_a_records(&response), vec![Ipv4Addr::new(1, 1, 1, 1)]);
+    assert_eq!(min_answer_ttl(&response), None);
+}
+
+#[tokio::test]
 async fn integration_resolve_timeout_returns_servfail() {
     let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let blackhole_addr = blackhole.local_addr().unwrap();
@@ -657,7 +713,14 @@ async fn relay_picker_new_rejects_empty_instances() {
         .unwrap();
     let doq_pool = Arc::new(DoqPool::new());
 
-    let result = RelayPicker::new(&conf, &picker, &http, &doq_pool).await;
+    let result = RelayPicker::new(
+        &conf,
+        &picker,
+        &http,
+        &doq_pool,
+        &UdpDispatcher::new().unwrap(),
+    )
+    .await;
     assert!(result.is_err());
 }
 
@@ -782,6 +845,20 @@ async fn auto_flushes_once_capacity_is_reached() {
         !data.is_empty(),
         "expected auto-flush to have written entries"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn full_history_buffer_drops_instead_of_blocking() {
+    let file = NamedTempFile::new().unwrap();
+    let history = Arc::new(HistoryBuffer::new(file.path(), None));
+
+    for i in 0..101 {
+        history.push(format!("domain{i}.com"), "1.1.1.1".into());
+    }
+
+    assert_eq!(history.dropped_count(), 1);
+    history.close().await.unwrap();
+    assert_eq!(read_history(file.path()).await.len(), 100);
 }
 
 #[tokio::test]

@@ -2,7 +2,7 @@ use crate::{
     Error, ResolverPicker,
     conf::{Relay, RelayConf, RelayTransport},
     dns::{build_lookup_query, parse_a_records},
-    resolver::DoqPool,
+    resolver::{DoqPool, UdpDispatcher},
 };
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
@@ -236,6 +236,7 @@ impl RelayInstance {
         resolver_picker: &ResolverPicker,
         http: &reqwest::Client,
         doq_pool: &DoqPool,
+        udp_dispatcher: &UdpDispatcher,
         resolve_ipv4: bool,
     ) -> Result<Self, Error> {
         let relay_host = host_from_url(&conf.relay_url).map_err(|err| {
@@ -245,7 +246,7 @@ impl RelayInstance {
         })?;
         let ipv4: Option<Vec<Ipv4Addr>> = if resolve_ipv4 {
             let resolved = resolver_picker
-                .resolve(&relay_host, None, http, doq_pool)
+                .resolve(&relay_host, None, http, doq_pool, udp_dispatcher)
                 .await
                 .map_err(|err| {
                     let msg = format!("failed to resolve relay host {}: {}", relay_host, err);
@@ -353,6 +354,7 @@ impl RelayPicker {
         resolver_picker: &ResolverPicker,
         http: &reqwest::Client,
         doq_pool: &DoqPool,
+        udp_dispatcher: &UdpDispatcher,
     ) -> Result<Self, Error> {
         if conf.relay_instances.is_empty() {
             return Err(Error::RelayErr("no relay instances configured".into()));
@@ -365,6 +367,7 @@ impl RelayPicker {
                     resolver_picker,
                     http,
                     doq_pool,
+                    udp_dispatcher,
                     conf.resolve_manual,
                 )
                 .await?,

@@ -5,11 +5,11 @@ use dns_relay::{
     conf::watch_conf_and_reload,
     constants::BACKLOG_CAPACITY,
     gen_relay_key, handle_query,
-    handler::{HandleQueryParams, HistoryBuffer, resolve_query},
+    handler::{HandleQueryParams, HistoryBuffer, InFlightQueries, resolve_query},
     helpers::clear_screen,
     init_logger, load_conf, new_cache,
     relay::{RelayPicker, resolve_domain_via_relay},
-    resolver::{DoqPool, Resolver},
+    resolver::{DoqPool, Resolver, UdpDispatcher},
     run_resolver_finder,
 };
 use shared::{
@@ -341,6 +341,8 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
     ));
     let http = build_http_client()?;
     let doq_pool = Arc::new(DoqPool::new());
+    let udp_dispatcher = Arc::new(UdpDispatcher::new()?);
+    let in_flight = Arc::new(InFlightQueries::new());
     let (
         initial_resolvers,
         resolver_searching,
@@ -390,31 +392,39 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
     } else {
         Arc::new(AtomicBool::new(false))
     };
-    let receiver_socket = Arc::new(
-        UdpSocket::bind("0.0.0.0:0")
-            .await
-            .expect("failed to bind receiver socket"),
-    );
     let resolver_picker = ResolverPicker::new(
         initial_resolvers,
         http.clone(),
         &Arc::clone(&doq_pool),
-        &receiver_socket,
+        &udp_dispatcher,
     )
     .await?;
     let relay_pciker = if relay_conf.enable {
         Some(Arc::new(
-            RelayPicker::new(&relay_conf, &resolver_picker, &http, &Arc::clone(&doq_pool)).await?,
+            RelayPicker::new(
+                &relay_conf,
+                &resolver_picker,
+                &http,
+                &Arc::clone(&doq_pool),
+                &udp_dispatcher,
+            )
+            .await?,
         ))
     } else {
         None
     };
     if searching_enabled {
         let healthy_resolvers = resolver_picker.healthy_resolvers();
+        let udp_dispatcher = Arc::clone(&udp_dispatcher);
         tokio::spawn(async move {
             let is_searching: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-            if let Err(err) =
-                run_resolver_finder(resolver_searching, healthy_resolvers, is_searching).await
+            if let Err(err) = run_resolver_finder(
+                resolver_searching,
+                healthy_resolvers,
+                is_searching,
+                udp_dispatcher,
+            )
+            .await
             {
                 error!("error in resolver finder: {}", err);
             }
@@ -450,6 +460,8 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
                 doq_pool.clone(),
                 history_buffer.clone(),
                 Arc::clone(&resolve_sem),
+                Arc::clone(&udp_dispatcher),
+                Arc::clone(&in_flight),
             ));
         }
     }
@@ -472,6 +484,8 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
         let is_vpn_active = Arc::clone(&is_vpn_active);
         let doq_pool = doq_pool.clone();
         let history_buffer = history_buffer.clone();
+        let udp_dispatcher = Arc::clone(&udp_dispatcher);
+        let in_flight = Arc::clone(&in_flight);
 
         tokio::spawn(async move {
             loop {
@@ -505,6 +519,8 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
                 let is_vpn_active = is_vpn_active.clone();
                 let doq_pool = doq_pool.clone();
                 let history_buffer = history_buffer.clone();
+                let udp_dispatcher = Arc::clone(&udp_dispatcher);
+                let in_flight = Arc::clone(&in_flight);
 
                 tokio::spawn(async move {
                     let _permit = permit;
@@ -521,6 +537,8 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
                         is_vpn_active: &is_vpn_active,
                         doq_pool: &doq_pool,
                         history_buffer: history_buffer.as_ref(),
+                        udp_dispatcher: &udp_dispatcher,
+                        in_flight: &in_flight,
                     };
                     handle_query(&params).await;
                 });
@@ -575,6 +593,8 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
             let is_vpn_active = is_vpn_active.clone();
             let doq_pool = doq_pool.clone();
             let history_buffer = history_buffer.clone();
+            let udp_dispatcher = Arc::clone(&udp_dispatcher);
+            let in_flight = Arc::clone(&in_flight);
             tokio::spawn(async move {
                 let _permit = permit;
                 let params = HandleQueryParams {
@@ -590,6 +610,8 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
                     is_vpn_active: &is_vpn_active,
                     doq_pool: &doq_pool,
                     history_buffer: history_buffer.as_ref(),
+                    udp_dispatcher: &udp_dispatcher,
+                    in_flight: &in_flight,
                 };
                 handle_query(&params).await;
             });
@@ -616,6 +638,8 @@ async fn run_obfs_listener(
     doq_pool: Arc<DoqPool>,
     history_buffer: Option<Arc<HistoryBuffer>>,
     resolve_sem: Arc<Semaphore>,
+    udp_dispatcher: Arc<UdpDispatcher>,
+    in_flight: Arc<InFlightQueries>,
 ) {
     let mut buf = [0u8; OBFS_PAYLOAD_BUF_SIZE];
 
@@ -679,6 +703,8 @@ async fn run_obfs_listener(
             let is_vpn_active = Arc::clone(&is_vpn_active);
             let doq_pool = doq_pool.clone();
             let history_buffer = history_buffer.clone();
+            let udp_dispatcher = Arc::clone(&udp_dispatcher);
+            let in_flight = Arc::clone(&in_flight);
             let key = keys[key_idx].clone();
 
             tokio::spawn(async move {
@@ -696,6 +722,8 @@ async fn run_obfs_listener(
                     is_vpn_active: &is_vpn_active,
                     doq_pool: &doq_pool,
                     history_buffer: history_buffer.as_ref(),
+                    udp_dispatcher: &udp_dispatcher,
+                    in_flight: &in_flight,
                 };
 
                 if let Some(resp) = resolve_query(&params).await {
@@ -738,9 +766,9 @@ async fn list_resolvers(conf_path: &PathBuf) -> Result<(), Error> {
     let conf = load_conf(conf_path)?;
     let http = build_http_client()?;
     let doq_pool = Arc::new(DoqPool::new());
-    let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+    let udp_dispatcher = Arc::new(UdpDispatcher::new()?);
     let resolver_picker =
-        ResolverPicker::new(conf.resolvers, http.clone(), &doq_pool, &socket).await?;
+        ResolverPicker::new(conf.resolvers, http.clone(), &doq_pool, &udp_dispatcher).await?;
     let healthy = resolver_picker.healthy_resolvers();
     let top_resolvers: Vec<Resolver> = {
         let guard = healthy.read().unwrap();
@@ -767,9 +795,9 @@ async fn resolve(
     let http = build_http_client()?;
     let doq_pool = Arc::new(DoqPool::new());
 
-    let receiver_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+    let udp_dispatcher = Arc::new(UdpDispatcher::new()?);
     let resolver_picker =
-        ResolverPicker::new(conf.resolvers, http.clone(), &doq_pool, &receiver_socket).await?;
+        ResolverPicker::new(conf.resolvers, http.clone(), &doq_pool, &udp_dispatcher).await?;
     if relay {
         if conf.relay_conf.relay_instances.is_empty() {
             return Err(Error::Other(
@@ -782,6 +810,7 @@ async fn resolve(
             &resolver_picker,
             &http,
             &Arc::clone(&doq_pool),
+            &udp_dispatcher,
         )
         .await?;
 
@@ -803,7 +832,7 @@ async fn resolve(
         }
     } else {
         let resolved = resolver_picker
-            .resolve(domain, resolver, &http, &doq_pool)
+            .resolve(domain, resolver, &http, &doq_pool, &udp_dispatcher)
             .await?;
         if resolved.is_empty() {
             println!(";; no A records found for {domain}");

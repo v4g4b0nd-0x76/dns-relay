@@ -257,9 +257,9 @@ impl ResolverPicker {
         resolvers: Vec<String>,
         http: reqwest::Client,
         doq_pool: &Arc<DoqPool>,
-        socket: &Arc<UdpSocket>,
+        udp_dispatcher: &Arc<UdpDispatcher>,
     ) -> Result<Self, Error> {
-        let sorted_resolvers = test_resolvers(resolvers, http, doq_pool, socket).await?;
+        let sorted_resolvers = test_resolvers(resolvers, http, doq_pool, udp_dispatcher).await?;
 
         Ok(Self {
             healthy_resolvers: Arc::new(RwLock::new(sorted_resolvers)),
@@ -345,6 +345,7 @@ impl ResolverPicker {
         resolver: Option<String>,
         http: &reqwest::Client,
         doq_pool: &DoqPool,
+        udp_dispatcher: &UdpDispatcher,
     ) -> Result<Vec<Ipv4Addr>, Error> {
         let resolver = resolver
             .map(|r| normalize_resolver(&r))
@@ -355,8 +356,19 @@ impl ResolverPicker {
         // close fallback
         let src_addr = SocketAddr::new(public_ip, 0);
         let query = build_lookup_query(domain);
-        let (reply, _len) =
-            resolve_from_upstream(&query, &resolver, src_addr, http, doq_pool).await?;
+        let (reply, _len) = timeout(
+            RESOLVE_TIMEOUT,
+            resolve_from_upstream_inner(
+                &query,
+                &resolver,
+                src_addr,
+                http,
+                doq_pool,
+                Some(udp_dispatcher),
+            ),
+        )
+        .await
+        .map_err(|_| Error::ResolveTimeout)??;
         let ips = parse_a_records(&reply);
         Ok(ips)
     }
@@ -547,16 +559,15 @@ async fn test_resolvers(
     resolvers: Vec<String>,
     http: reqwest::Client,
     doq_pool: &Arc<DoqPool>,
-    socket: &Arc<UdpSocket>,
+    udp_dispatcher: &Arc<UdpDispatcher>,
 ) -> Result<Vec<Resolver>, Error> {
     let mut results: Vec<(String, Duration)> =
         collect_concurrent(resolvers, HEALTH_CHECK_CONCURRENCY, move |resolver| {
             let http = http.clone();
-            let socket = socket.clone();
+            let udp_dispatcher = udp_dispatcher.clone();
             let doq_pool = doq_pool.clone();
             async move {
-                let socket = socket.clone();
-                match measure_latency(&resolver, &http, &doq_pool, &socket).await {
+                match measure_latency(&resolver, &http, &doq_pool, &udp_dispatcher).await {
                     Ok(latency) => {
                         debug!("[PICKER LOG] {} responded in {:?}", resolver, latency);
                         Some((resolver, latency))
@@ -591,7 +602,7 @@ async fn measure_latency(
     resolver: &str,
     http: &reqwest::Client,
     doq_pool: &DoqPool,
-    socket: &Arc<UdpSocket>,
+    udp_dispatcher: &UdpDispatcher,
 ) -> Result<Duration, Error> {
     let start = Instant::now();
 
@@ -638,12 +649,14 @@ async fn measure_latency(
         .parse()
         .map_err(|_| Error::InvalidResolver(resolver.to_owned()))?;
 
-    socket.send_to(DNS_PROBE_PACKET, addr).await?;
-
-    let mut buf = [0u8; 512];
-    match timeout(UDP_PROBE_TIMEOUT, socket.recv_from(&mut buf)).await {
+    match timeout(
+        UDP_PROBE_TIMEOUT,
+        udp_dispatcher.resolve(DNS_PROBE_PACKET, addr),
+    )
+    .await
+    {
         Ok(Ok(_)) => Ok(start.elapsed()),
-        Ok(Err(err)) => Err(err.into()),
+        Ok(Err(err)) => Err(err),
         Err(_) => Err(Error::UdpTimeout),
     }
 }
@@ -652,6 +665,7 @@ pub async fn run_resolver_finder(
     resolver_searching: ResolverSearchingConf,
     healthy_resolvers: Arc<RwLock<Vec<Resolver>>>,
     is_searching: Arc<AtomicBool>,
+    udp_dispatcher: Arc<UdpDispatcher>,
 ) -> Result<(), Error> {
     let mut tick = interval(Duration::from_secs(
         resolver_searching
@@ -667,7 +681,6 @@ pub async fn run_resolver_finder(
     // Client is Arc-backed internally; no extra Arc wrapper needed.
     let http = build_http_client()?;
     let doq_pool = Arc::new(DoqPool::new());
-    let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
 
     // RAII guard: flips the flag back to false on ANY exit from the loop body
     // (early `continue`, early `return`, or panic), not just the "happy path".
@@ -734,11 +747,11 @@ pub async fn run_resolver_finder(
 
         let mut results: Vec<(String, Duration)> =
             collect_concurrent(candidates, HEALTH_CHECK_CONCURRENCY, |resolver| {
-                let socket = socket.clone();
+                let udp_dispatcher = udp_dispatcher.clone();
                 let http = http.clone();
                 let doq_pool = doq_pool.clone();
                 async move {
-                    match measure_latency(&resolver, &http, &doq_pool, &socket).await {
+                    match measure_latency(&resolver, &http, &doq_pool, &udp_dispatcher).await {
                         Ok(latency) => {
                             debug!("[PICKER LOG] {} responded in {:?}", resolver, latency);
                             Some((resolver, latency))
@@ -1120,6 +1133,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_handles_512_concurrent_queries() {
+        const QUERY_COUNT: usize = 512;
+        let dispatcher = UdpDispatcher::new().unwrap();
+        let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            for _ in 0..QUERY_COUNT {
+                let (len, peer) = upstream.recv_from(&mut buf).await.unwrap();
+                buf[2] |= 0x80;
+                upstream.send_to(&buf[..len], peer).await.unwrap();
+            }
+        });
+
+        let mut queries = JoinSet::new();
+        for _ in 0..QUERY_COUNT {
+            let dispatcher = dispatcher.clone();
+            queries.spawn(async move {
+                timeout(
+                    Duration::from_secs(2),
+                    dispatcher.resolve(DNS_PROBE_PACKET, upstream_addr),
+                )
+                .await
+                .unwrap()
+                .unwrap()
+            });
+        }
+        while let Some(result) = queries.join_next().await {
+            assert!(result.unwrap().0[2] & 0x80 != 0);
+        }
+        server.await.unwrap();
+        assert_eq!(dispatcher.pending_len(), 0);
+    }
+
+    #[tokio::test]
     async fn dispatcher_cancellation_removes_pending_request() {
         let dispatcher = UdpDispatcher::new().unwrap();
         let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -1414,6 +1462,7 @@ garbage
             conf,
             Arc::clone(&healthy),
             Arc::clone(&is_searching),
+            Arc::new(UdpDispatcher::new().unwrap()),
         ));
 
         // First `interval` tick fires immediately; with is_searching==true the loop

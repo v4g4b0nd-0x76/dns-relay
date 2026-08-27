@@ -6,7 +6,7 @@ use shared::metric_wrapper::MetricConf;
 use std::sync::Arc;
 use std::time::SystemTime;
 use std::{path::PathBuf, sync::RwLock};
-use tokio::time::{Duration, interval};
+use tokio::time::{Duration, MissedTickBehavior, interval};
 
 #[derive(Default, Deserialize, Clone)]
 pub struct Conf {
@@ -104,7 +104,7 @@ impl Default for HotreloadConf {
     fn default() -> Self {
         Self {
             enable: true,
-            poll_interval_ms: 100,
+            poll_interval_ms: 1_000,
         }
     }
 }
@@ -135,14 +135,21 @@ pub async fn watch_conf_and_reload(
     cache: Arc<ResponseCache>,
 ) {
     let mut tick = interval(poll_interval);
-    let mut last_mtime: Option<SystemTime> =
-        std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-    let mut list_mtimes = rule_file_mtimes(&conf.read().unwrap());
+    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut last_mtime = tokio::fs::metadata(&path)
+        .await
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    let initial_conf = conf.read().unwrap().clone();
+    let mut list_mtimes = rule_file_mtimes(&initial_conf).await;
 
     loop {
         tick.tick().await;
 
-        let mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
+        let mtime = match tokio::fs::metadata(&path)
+            .await
+            .and_then(|metadata| metadata.modified())
+        {
             Ok(m) => m,
             Err(err) => {
                 error!("failed to stat {}: {}", path.display(), err);
@@ -150,28 +157,36 @@ pub async fn watch_conf_and_reload(
             }
         };
         let config_changed = Some(mtime) != last_mtime;
-        let current_list_mtimes = rule_file_mtimes(&conf.read().unwrap());
+        let current_conf = conf.read().unwrap().clone();
+        let current_list_mtimes = rule_file_mtimes(&current_conf).await;
         let lists_changed = current_list_mtimes != list_mtimes;
         if !config_changed && !lists_changed {
             continue;
         }
-        last_mtime = Some(mtime);
+        let reload_path = path.clone();
+        let reload_result = tokio::task::spawn_blocking(move || {
+            let new_conf = if config_changed {
+                load_conf(&reload_path)?
+            } else {
+                current_conf
+            };
+            let new_trie = DomainTrie::build(&new_conf.drop_list, &new_conf.redirect_list);
+            Ok::<_, Error>((new_conf, new_trie))
+        })
+        .await
+        .map_err(|err| Error::Other(format!("config reload task failed: {err}")))
+        .and_then(|result| result);
 
-        let new_conf = if config_changed {
-            load_conf(&path)
-        } else {
-            Ok(conf.read().unwrap().clone())
-        };
-        match new_conf {
-            Ok(new_conf) => {
-                let new_trie = DomainTrie::build(&new_conf.drop_list, &new_conf.redirect_list);
+        match reload_result {
+            Ok((new_conf, new_trie)) => {
                 rule_trie.store(Arc::new(new_trie));
                 // A list edit can add, remove, or redirect a name. Clearing a
                 // bounded in-memory cache is cheap and prevents stale policy.
                 if let Ok(mut guard) = cache.lock() {
                     guard.clear();
                 }
-                list_mtimes = rule_file_mtimes(&new_conf);
+                last_mtime = Some(mtime);
+                list_mtimes = rule_file_mtimes(&new_conf).await;
                 *conf.write().unwrap() = new_conf;
 
                 info!(config_changed, lists_changed, "rules reloaded successfully");
@@ -181,14 +196,15 @@ pub async fn watch_conf_and_reload(
     }
 }
 
-fn rule_file_mtimes(conf: &Conf) -> Vec<(std::path::PathBuf, Option<SystemTime>)> {
-    let mut files: Vec<_> = referenced_rule_files(&conf.drop_list, &conf.redirect_list)
-        .into_iter()
-        .map(|path| {
-            let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-            (path, mtime)
-        })
-        .collect();
+async fn rule_file_mtimes(conf: &Conf) -> Vec<(PathBuf, Option<SystemTime>)> {
+    let mut files = Vec::new();
+    for path in referenced_rule_files(&conf.drop_list, &conf.redirect_list) {
+        let mtime = tokio::fs::metadata(&path)
+            .await
+            .and_then(|metadata| metadata.modified())
+            .ok();
+        files.push((path, mtime));
+    }
     files.sort_by(|left, right| left.0.cmp(&right.0));
     files
 }

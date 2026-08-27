@@ -5,14 +5,17 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{
-            AtomicBool,
+            AtomicBool, AtomicU64,
             Ordering::{AcqRel, Acquire, Relaxed, Release},
         },
     },
 };
 
 use crate::{
-    cache::{CacheKey, ResponseCache, cache_key_from_query_for_client, cache_lookup, cache_store},
+    cache::{
+        CacheKey, ResponseCache, cache_key_from_query_for_client, cache_lookup, cache_lookup_stale,
+        cache_store,
+    },
     conf::RecordHisotryConf,
     dns::{
         craft_nxdomain_response, craft_redirect_response, parse_a_records, parse_domain, with_txid,
@@ -20,7 +23,7 @@ use crate::{
     errors::Error,
     metric_wrapper::MetricWrapper,
     relay::RelayPicker,
-    resolver::{DoqPool, ResolverPicker, resolve_from_upstream},
+    resolver::{DoqPool, ResolverPicker, UdpDispatcher},
 };
 use crossbeam_queue::ArrayQueue;
 use shared::{
@@ -28,7 +31,7 @@ use shared::{
     dns::{craft_servfail_response, send},
     domain_trie::{DomainTrie, RuleMatch, check_rules},
 };
-use tokio::{io::AsyncWriteExt, net::UdpSocket, sync::watch, time::timeout};
+use tokio::{net::UdpSocket, sync::watch, time::timeout};
 use tracing::{debug, error, warn};
 
 pub struct HandleQueryParams<'a> {
@@ -44,6 +47,8 @@ pub struct HandleQueryParams<'a> {
     pub is_vpn_active: &'a Arc<AtomicBool>,
     pub doq_pool: &'a DoqPool,
     pub history_buffer: Option<&'a Arc<HistoryBuffer>>,
+    pub udp_dispatcher: &'a UdpDispatcher,
+    pub in_flight: &'a Arc<InFlightQueries>,
 }
 macro_rules! incr_metric {
     ($metric:expr, $field:ident) => {
@@ -84,11 +89,11 @@ impl InFlightQueries {
     }
 
     #[cfg(test)]
-    pub fn len(&self) -> usize {
+    pub fn is_empty(&self) -> bool {
         self.entries
             .lock()
-            .map(|entries| entries.len())
-            .unwrap_or(0)
+            .map(|entries| entries.is_empty())
+            .unwrap_or(false)
     }
 }
 
@@ -154,6 +159,8 @@ pub async fn resolve_query<'a>(params: &HandleQueryParams<'a>) -> Option<Vec<u8>
         is_vpn_active,
         doq_pool,
         history_buffer,
+        udp_dispatcher,
+        in_flight,
         ..
     } = *params;
 
@@ -192,6 +199,16 @@ pub async fn resolve_query<'a>(params: &HandleQueryParams<'a>) -> Option<Vec<u8>
         return Some(with_txid(cached, req_txid));
     }
 
+    let leader = match in_flight.join(cache_key.clone()) {
+        Flight::Leader(leader) => leader,
+        Flight::Follower(follower) => {
+            return follower
+                .wait()
+                .await
+                .map(|packet| with_txid(packet, req_txid));
+        }
+    };
+
     let resolve_result: Result<Vec<u8>, Error> = if let Some(relay_picker) = relay_picker {
         let instance = relay_picker.pick();
         timeout(
@@ -201,27 +218,28 @@ pub async fn resolve_query<'a>(params: &HandleQueryParams<'a>) -> Option<Vec<u8>
         .await
         .unwrap_or(Err(Error::ResolveTimeout))
     } else {
-        let resolver = resolver_picker
-            .pick_doh_first(is_vpn_active.load(std::sync::atomic::Ordering::Relaxed));
-        timeout(
-            RESOLVE_TIMEOUT,
-            resolve_from_upstream(payload, &resolver, src_addr, http, doq_pool),
-        )
-        .await
-        .unwrap_or(Err(Error::ResolveTimeout))
-        .map(|(buf, _len)| buf)
+        resolver_picker
+            .resolve_packet(
+                payload,
+                src_addr,
+                is_vpn_active.load(std::sync::atomic::Ordering::Relaxed),
+                http,
+                doq_pool,
+                udp_dispatcher,
+            )
+            .await
     };
 
-    match resolve_result {
+    let response = match resolve_result {
         Ok(reply_buf) => {
-            cache_store(cache, cache_key, &reply_buf);
+            cache_store(cache, cache_key.clone(), &reply_buf);
             incr_metric!(metric_wrapper, resolved_count);
             if let Some(history_buffer) = history_buffer {
                 let a_records = parse_a_records(&reply_buf);
                 let ips: Vec<String> = a_records.iter().map(|ip| ip.to_string()).collect();
                 history_buffer.push_many(domain, ips);
             }
-            Some(with_txid(reply_buf, req_txid))
+            Some(reply_buf)
         }
         Err(Error::ResolveTimeout) => {
             error!(
@@ -229,13 +247,21 @@ pub async fn resolve_query<'a>(params: &HandleQueryParams<'a>) -> Option<Vec<u8>
                 domain, RESOLVE_TIMEOUT
             );
             incr_metric!(metric_wrapper, timeout_count);
-            craft_servfail_response(payload)
+            cache_lookup_stale(cache, &cache_key).or_else(|| craft_servfail_response(payload))
         }
         Err(err) => {
             error!("failed to resolve {}: {}", domain, err);
             incr_metric!(metric_wrapper, failed_count);
-            craft_servfail_response(payload)
+            cache_lookup_stale(cache, &cache_key).or_else(|| craft_servfail_response(payload))
         }
+    };
+
+    if let Some(response) = response {
+        let normalized = with_txid(response, [0, 0]);
+        leader.publish(normalized.clone());
+        Some(with_txid(normalized, req_txid))
+    } else {
+        None
     }
 }
 
@@ -253,6 +279,7 @@ pub struct HistoryBuffer {
     path: PathBuf,
     queue: ArrayQueue<HistoryBufferEntry>,
     flushing: AtomicBool,
+    dropped: AtomicU64,
     lines_count: usize,
     matched_list: Vec<String>,
 }
@@ -267,6 +294,7 @@ impl HistoryBuffer {
             path: path.into(),
             queue: ArrayQueue::new(CAP),
             flushing: AtomicBool::new(false),
+            dropped: AtomicU64::new(0),
             matched_list,
             lines_count,
         }
@@ -281,7 +309,7 @@ impl HistoryBuffer {
             return;
         }
 
-        let mut entry = if !self.matched_list.is_empty() {
+        let entry = if !self.matched_list.is_empty() {
             if !self
                 .matched_list
                 .iter()
@@ -294,10 +322,10 @@ impl HistoryBuffer {
             (domain, ips)
         };
 
-        while let Err(rejected) = self.queue.push(entry) {
-            entry = rejected;
+        if self.queue.push(entry).is_err() {
+            self.dropped.fetch_add(1, Relaxed);
             self.try_spawn_flush();
-            std::hint::spin_loop();
+            return;
         }
         if self.queue.len() >= CAP {
             self.try_spawn_flush();
@@ -327,6 +355,9 @@ impl HistoryBuffer {
                     tracing::error!("history flush failed: {e:?}");
                 }
                 this.flushing.store(false, Release);
+                if !this.queue.is_empty() {
+                    this.try_spawn_flush();
+                }
             });
         }
     }
@@ -336,59 +367,73 @@ impl HistoryBuffer {
         while let Some(entry) = self.queue.pop() {
             batch.push(entry);
         }
+        let dropped = self.dropped.swap(0, AcqRel);
+        if dropped > 0 {
+            warn!(dropped, "history entries dropped while the buffer was full");
+        }
         if batch.is_empty() {
             return Ok(());
         }
-        let mut history: HashMap<String, Vec<String>> = HashMap::new();
-        let mut seen: HashMap<String, HashSet<String>> = HashMap::new();
-        let mut order: Vec<String> = Vec::new();
-        if let Ok(content) = tokio::fs::read_to_string(&self.path).await {
-            for line in content.lines() {
-                let mut parts = line.split_whitespace();
-                if let Some(domain) = parts.next() {
-                    let ips: Vec<String> = parts.map(String::from).collect();
-                    seen.insert(domain.to_string(), ips.iter().cloned().collect());
-                    order.push(domain.to_string());
-                    history.insert(domain.to_string(), ips);
+
+        let path = self.path.clone();
+        let lines_count = self.lines_count;
+        tokio::task::spawn_blocking(move || -> Result<(), Error> {
+            let mut history: HashMap<String, Vec<String>> = HashMap::new();
+            let mut seen: HashMap<String, HashSet<String>> = HashMap::new();
+            let mut order: Vec<String> = Vec::new();
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                for line in content.lines() {
+                    let mut parts = line.split_whitespace();
+                    if let Some(domain) = parts.next() {
+                        let ips: Vec<String> = parts.map(String::from).collect();
+                        seen.insert(domain.to_string(), ips.iter().cloned().collect());
+                        order.push(domain.to_string());
+                        history.insert(domain.to_string(), ips);
+                    }
                 }
             }
-        }
-        for (domain, ips) in batch {
-            let existing = history.entry(domain.clone()).or_insert_with(|| {
-                order.push(domain.clone());
-                Vec::new()
-            });
-            let seen_set = seen.entry(domain.clone()).or_default();
-            for ip in ips {
-                // skip if this ip has ever been recorded for this domain before
-                if seen_set.insert(ip.clone()) {
-                    existing.push(ip);
+            for (domain, ips) in batch {
+                let existing = history.entry(domain.clone()).or_insert_with(|| {
+                    order.push(domain.clone());
+                    Vec::new()
+                });
+                let seen_set = seen.entry(domain.clone()).or_default();
+                for ip in ips {
+                    if seen_set.insert(ip.clone()) {
+                        existing.push(ip);
+                    }
                 }
             }
-        }
 
-        if order.len() > self.lines_count {
-            let excess = order.len() - self.lines_count;
-            for domain in order.drain(..excess) {
-                history.remove(&domain);
-                seen.remove(&domain);
+            if order.len() > lines_count {
+                let excess = order.len() - lines_count;
+                for domain in order.drain(..excess) {
+                    history.remove(&domain);
+                    seen.remove(&domain);
+                }
             }
-        }
 
-        let mut out = String::new();
-        for domain in &order {
-            out.push_str(domain);
-            for ip in &history[domain] {
-                out.push(' ');
-                out.push_str(ip);
+            let mut out = String::new();
+            for domain in &order {
+                out.push_str(domain);
+                for ip in &history[domain] {
+                    out.push(' ');
+                    out.push_str(ip);
+                }
+                out.push('\n');
             }
-            out.push('\n');
-        }
-        let mut file = tokio::fs::File::create(&self.path).await?;
-        file.write_all(out.as_bytes()).await?;
-        file.flush().await?;
-        Ok(())
+            std::fs::write(path, out)?;
+            Ok(())
+        })
+        .await
+        .map_err(|err| Error::Other(format!("history flush task failed: {err}")))?
     }
+
+    #[cfg(test)]
+    pub fn dropped_count(&self) -> u64 {
+        self.dropped.load(Relaxed)
+    }
+
     pub async fn close(self: &Arc<Self>) -> Result<(), Error> {
         while self.flushing.load(Acquire) {
             tokio::task::yield_now().await;
