@@ -19,6 +19,8 @@
   and no longer performs an external public-IP lookup during bootstrap.
 - Programmatic lookups now omit ECS for the unspecified client address instead
   of advertising the invalid `0.0.0/24` subnet.
+- Task 3 is complete: the library client reuses the daemon's bounded DNS cache,
+  in-flight miss coalescing, and transport-selection path.
 
 ## Verified Commits
 
@@ -46,6 +48,11 @@
 - Task 2 regression RED: the unspecified-address ECS test failed because the
   shared encoder added `0.0.0/24`.
 - Task 2 GREEN: `cargo test --workspace` passed 72 tests; 1 test was ignored.
+- Task 3 RED: repeated and 32-way concurrent client lookups produced duplicate
+  upstream DNS queries.
+- Task 3 GREEN: client tests passed with one upstream query for cached and
+  concurrent lookups; `cargo test --workspace` passed 74 tests with 1 ignored;
+  strict workspace Clippy passed.
 
 ## Resume Here
 
@@ -53,14 +60,13 @@
    `docs/superpowers/specs/2026-08-27-dns-resolver-crate-relay-proxy-design.md`.
 2. Read
    `docs/superpowers/plans/2026-08-27-dns-resolver-crate-relay-proxy.md`.
-3. Start Task 3 by adding failing client cache and miss-coalescing tests in
-   `dns_relay/src/client.rs`.
+3. Start Task 4 by adding the tag-gated crates.io publication workflow and
+   copy-ready library documentation.
 
 ## Remaining Phases
 
-1. Resolver cache, miss coalescing, and DNS-server transport reuse.
-2. crates.io GitHub Action and library documentation.
-3. `relay-proxy` dependency, DNS configuration, and fail-closed upstream lookup.
-4. Direct TLS tunnel and conditional CA initialization.
-5. Catch-all rules and relay hot-path cleanup.
-6. Final cross-repository verification and documentation.
+1. crates.io GitHub Action and library documentation.
+2. `relay-proxy` dependency, DNS configuration, and fail-closed upstream lookup.
+3. Direct TLS tunnel and conditional CA initialization.
+4. Catch-all rules and relay hot-path cleanup.
+5. Final cross-repository verification and documentation.

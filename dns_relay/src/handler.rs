@@ -16,6 +16,7 @@ use crate::{
         CacheKey, ResponseCache, cache_key_from_query_for_client, cache_lookup, cache_lookup_stale,
         cache_store,
     },
+    client::resolve_transport,
     conf::RecordHisotryConf,
     dns::{
         craft_nxdomain_response, craft_redirect_response, parse_a_records, parse_domain, with_txid,
@@ -31,7 +32,7 @@ use shared::{
     dns::{craft_servfail_response, send},
     domain_trie::{DomainTrie, RuleMatch, check_rules},
 };
-use tokio::{net::UdpSocket, sync::watch, time::timeout};
+use tokio::{net::UdpSocket, sync::watch};
 use tracing::{debug, error, warn};
 
 pub struct HandleQueryParams<'a> {
@@ -209,26 +210,18 @@ pub async fn resolve_query<'a>(params: &HandleQueryParams<'a>) -> Option<Vec<u8>
         }
     };
 
-    let resolve_result: Result<Vec<u8>, Error> = if let Some(relay_picker) = relay_picker {
-        let instance = relay_picker.pick();
-        timeout(
-            relay_picker.timeout_duration(),
-            instance.resolve(&domain, payload),
-        )
-        .await
-        .unwrap_or(Err(Error::ResolveTimeout))
-    } else {
-        resolver_picker
-            .resolve_packet(
-                payload,
-                src_addr,
-                is_vpn_active.load(std::sync::atomic::Ordering::Relaxed),
-                http,
-                doq_pool,
-                udp_dispatcher,
-            )
-            .await
-    };
+    let resolve_result: Result<Vec<u8>, Error> = resolve_transport(
+        &domain,
+        payload,
+        src_addr,
+        is_vpn_active.load(std::sync::atomic::Ordering::Relaxed),
+        resolver_picker,
+        relay_picker,
+        http,
+        doq_pool,
+        udp_dispatcher,
+    )
+    .await;
 
     let response = match resolve_result {
         Ok(reply_buf) => {
