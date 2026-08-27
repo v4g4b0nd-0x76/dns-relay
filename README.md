@@ -60,6 +60,13 @@ make patch PUSH=1               # bump + push commit and tag to origin
 
 ```
 
+### Publishing the crates
+
+Create a crates.io API token with publish permission and save it in the GitHub
+repository as the Actions secret `CARGO_REGISTRY_TOKEN`. The next
+`PUSH=1 make patch` tag runs both the binary release workflow and the crate
+publication workflow; `dns-relay-shared` is published before `dns_relay`.
+
 ### Windows releases
 
 The Windows release ZIP for the main resolver contains `dns_relay.exe`; the

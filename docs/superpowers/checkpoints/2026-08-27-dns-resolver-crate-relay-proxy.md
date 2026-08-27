@@ -21,6 +21,9 @@
   of advertising the invalid `0.0.0/24` subnet.
 - Task 3 is complete: the library client reuses the daemon's bounded DNS cache,
   in-flight miss coalescing, and transport-selection path.
+- Task 4 is complete: version tags verify the workspace and publish the internal
+  crate before the public crate; CI now checks all workspace targets; release
+  setup and programmatic usage are documented.
 
 ## Verified Commits
 
@@ -53,6 +56,13 @@
 - Task 3 GREEN: client tests passed with one upstream query for cached and
   concurrent lookups; `cargo test --workspace` passed 74 tests with 1 ignored;
   strict workspace Clippy passed.
+- Task 4 RED: `.github/workflows/publish-crates.yml` did not exist.
+- Task 4 local parser adjustment: macOS Ruby 2.6 does not accept Psych's newer
+  `aliases:` keyword, so syntax validation used `YAML.load_file(f)`; no workflow
+  uses aliases.
+- Task 4 GREEN: workflow YAML and `scripts/bump.sh` parsed; formatting, 74 tests
+  with 1 ignored, strict Clippy, internal-crate packaging, and Cargo metadata all
+  passed. No tag was pushed and no local publication was attempted.
 
 ## Resume Here
 
@@ -60,13 +70,12 @@
    `docs/superpowers/specs/2026-08-27-dns-resolver-crate-relay-proxy-design.md`.
 2. Read
    `docs/superpowers/plans/2026-08-27-dns-resolver-crate-relay-proxy.md`.
-3. Start Task 4 by adding the tag-gated crates.io publication workflow and
-   copy-ready library documentation.
+3. Start Task 5 in `relay-proxy` by adding failing DNS configuration and
+   resolver-backed upstream tests.
 
 ## Remaining Phases
 
-1. crates.io GitHub Action and library documentation.
-2. `relay-proxy` dependency, DNS configuration, and fail-closed upstream lookup.
-3. Direct TLS tunnel and conditional CA initialization.
-4. Catch-all rules and relay hot-path cleanup.
-5. Final cross-repository verification and documentation.
+1. `relay-proxy` dependency, DNS configuration, and fail-closed upstream lookup.
+2. Direct TLS tunnel and conditional CA initialization.
+3. Catch-all rules and relay hot-path cleanup.
+4. Final cross-repository verification and documentation.

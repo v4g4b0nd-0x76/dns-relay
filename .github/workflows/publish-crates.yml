@@ -1,0 +1,48 @@
+name: Publish crates
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Verify tag version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          manifest_version="$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "dns_relay") | .version')"
+          test "$version" = "$manifest_version"
+      - name: Verify workspace
+        run: |
+          cargo fmt --all -- --check
+          cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Package crates
+        run: cargo package -p dns-relay-shared --locked
+      - name: Publish internal crate
+        run: cargo publish -p dns-relay-shared --locked
+      - name: Wait for internal crate
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in {1..12}; do
+            cargo info --registry crates-io "dns-relay-shared@${version}" && exit 0
+            sleep 10
+          done
+          exit 1
+      - name: Publish public crate
+        run: |
+          cargo package -p dns_relay --locked
+          cargo publish -p dns_relay --locked

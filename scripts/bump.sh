@@ -63,7 +63,8 @@ awk -v ver="$next" '
   { print }
 ' Cargo.toml >"$tmp"
 mv "$tmp" Cargo.toml
-git add Cargo.toml
+cargo check --workspace
+git add Cargo.toml Cargo.lock
 git commit -m "$(
     cat <<EOF
 chore: release v${next}

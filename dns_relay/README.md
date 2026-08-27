@@ -27,6 +27,36 @@ If it's receiving queries from the `resolver_proxy` component, it decodes the ob
 make test
 ```
 
+## Use as a Rust library
+
+Adding the crate uses only its resolver API; it does not start the DNS server,
+bind port 53, or change system DNS.
+
+```toml
+[dependencies]
+dns_relay = "1"
+```
+
+```rust
+use dns_relay::{DnsResolver, ResolverConfig};
+
+let resolver = DnsResolver::new(ResolverConfig {
+    resolvers: vec![
+        "https://cloudflare-dns.com/dns-query".into(),
+        "1.1.1.1:53".into(),
+    ],
+    relay: None,
+})
+.await?;
+
+let addresses = resolver.resolve_ipv4("example.com").await?;
+```
+
+Keep one `DnsResolver` for the lifetime of the application so its connections,
+health state, DNS cache, and concurrent lookup sharing are reused. Set `relay`
+to an existing `RelayConf` when DNS queries should use the encrypted Cloudflare
+Worker or Google Apps Script path.
+
 Since it needs to bind to port 53, it needs elevated privileges. Either run it with `sudo`, or grant the capability directly so it doesn't need to run as root:
 
 ```bash
