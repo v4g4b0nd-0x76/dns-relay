@@ -14,6 +14,11 @@
 - Inline execution on both `master` branches was explicitly approved.
 - Task 1 is complete: both manifests are publishable, the internal crate
   verifies independently, and the first-publication ordering is documented.
+- Task 2 is complete: `dns_relay` exposes a programmatic IPv4 resolver,
+  constructs transports once, supports the existing optional relay config,
+  and no longer performs an external public-IP lookup during bootstrap.
+- Programmatic lookups now omit ECS for the unspecified client address instead
+  of advertising the invalid `0.0.0/24` subnet.
 
 ## Verified Commits
 
@@ -36,6 +41,11 @@
   verified 15 files.
 - Task 1 expected bootstrap constraint: public packaging now reaches crates.io
   lookup and stops because `dns-relay-shared` has not been published yet.
+- Task 2 RED: the public API tests failed because `DnsResolver` and
+  `ResolverConfig` did not exist.
+- Task 2 regression RED: the unspecified-address ECS test failed because the
+  shared encoder added `0.0.0/24`.
+- Task 2 GREEN: `cargo test --workspace` passed 72 tests; 1 test was ignored.
 
 ## Resume Here
 
@@ -43,12 +53,12 @@
    `docs/superpowers/specs/2026-08-27-dns-resolver-crate-relay-proxy-design.md`.
 2. Read
    `docs/superpowers/plans/2026-08-27-dns-resolver-crate-relay-proxy.md`.
-3. Start Task 2 by writing the failing `DnsResolver` API tests in
+3. Start Task 3 by adding failing client cache and miss-coalescing tests in
    `dns_relay/src/client.rs`.
 
 ## Remaining Phases
 
-1. `DnsResolver` API and DNS-server integration.
+1. Resolver cache, miss coalescing, and DNS-server transport reuse.
 2. crates.io GitHub Action and library documentation.
 3. `relay-proxy` dependency, DNS configuration, and fail-closed upstream lookup.
 4. Direct TLS tunnel and conditional CA initialization.

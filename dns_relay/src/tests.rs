@@ -217,6 +217,14 @@ fn set_ecs_option_skips_loopback_by_default() {
 }
 
 #[test]
+fn set_ecs_option_skips_unspecified_ipv4() {
+    let query = mock_query_google().to_vec();
+    let client = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+    let result = set_ecs_option(&query, client, None).expect("should return Some(unchanged)");
+    assert_eq!(result, query);
+}
+
+#[test]
 fn set_ecs_option_fabricates_loopback_ip_when_opted_in() {
     // Passing Some(fake_ip) is the explicit opt-in path for testing ECS
     // behavior against loopback clients, replacing the old silent 8.8.8.8 hardcode.

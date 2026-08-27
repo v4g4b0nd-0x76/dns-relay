@@ -1,10 +1,12 @@
 //! DNS Relay library: config, resolver picker, packet helpers, and query handling.
 use shared::*;
+mod client;
 pub mod conf;
 pub mod handler;
 pub mod relay;
 pub mod resolver;
 pub use cache::{ResponseCache, new_cache};
+pub use client::{DnsResolver, ResolverConfig};
 pub use conf::{Conf, load_conf};
 pub use errors::{DohError, Error};
 pub use handler::handle_query;

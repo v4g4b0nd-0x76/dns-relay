@@ -538,7 +538,10 @@ pub fn set_ecs_option(
     let ip_bytes = match client_addr.ip() {
         std::net::IpAddr::V4(ipv4) => {
             let octets = ipv4.octets();
-            if octets[0] == 127 {
+            if ipv4.is_unspecified() {
+                return Some(payload.to_vec());
+            }
+            if ipv4.is_loopback() {
                 match fabricate_public_ip_for_loopback {
                     Some(fake) => fake,
                     None => return Some(payload.to_vec()), // leave ECS out for loopback/test clients

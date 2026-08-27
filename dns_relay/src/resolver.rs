@@ -25,7 +25,6 @@ use crate::{
     constants::{SEARCH_RESOLVER_INTERVAL, UDP_PROBE_TIMEOUT},
     dns::{build_lookup_query, parse_a_records, set_ecs_option},
     errors::{DohError, Error},
-    helpers::get_public_ip,
 };
 use quinn::{
     ClientConfig, Connecting, Connection, Endpoint, TransportConfig,
@@ -350,11 +349,7 @@ impl ResolverPicker {
         let resolver = resolver
             .map(|r| normalize_resolver(&r))
             .unwrap_or_else(|| self.pick());
-        let public_ip = get_public_ip(http)
-            .await
-            .unwrap_or(IpAddr::V4(Ipv4Addr::new(185, 143, 233, 5))); // this ip is for iran so its a
-        // close fallback
-        let src_addr = SocketAddr::new(public_ip, 0);
+        let src_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
         let query = build_lookup_query(domain);
         let (reply, _len) = timeout(
             RESOLVE_TIMEOUT,
