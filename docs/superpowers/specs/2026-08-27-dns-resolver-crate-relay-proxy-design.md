@@ -260,7 +260,10 @@ A dedicated workflow runs on pushed `v*` tags. It:
 
 1. Verifies that the tag exactly matches the workspace package version.
 2. Runs formatting, workspace tests, and strict Clippy.
-3. Runs `cargo package` for `dns-relay-shared` and `dns_relay`.
+3. Runs `cargo package` for `dns-relay-shared` and
+   `cargo package -p dns_relay --no-verify` for the public crate. Full
+   verification of the public package cannot resolve its new registry
+   dependency before the internal package's first publication.
 4. Publishes `dns-relay-shared`.
 5. Waits with a bounded retry for that exact internal version to appear in the
    registry index.
@@ -299,7 +302,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo package -p dns-relay-shared
-cargo package -p dns_relay
+cargo package -p dns_relay --no-verify
 ```
 
 and in `relay-proxy`:
@@ -311,9 +314,10 @@ cargo clippy --all-targets -- -D warnings
 cargo build --profile release-perf
 ```
 
-The publish workflow is syntax-checked locally and its actual publication is
-validated by GitHub Actions because a crates.io release is permanent external
-state.
+After GitHub publishes `dns-relay-shared` and observes it in the registry index,
+`cargo publish -p dns_relay` performs Cargo's full extracted-package build before
+upload. The workflow is syntax-checked locally; actual publication is validated
+by GitHub Actions because a crates.io release is permanent external state.
 
 ## Checkpoints And Resume Safety
 

@@ -6,6 +6,8 @@
 
 - Design approved in chat.
 - Written specification prepared for user review.
+- Written specification approved by the user.
+- First-release package verification ordering clarified before planning.
 - Implementation has not started.
 
 ## Verified Commits
@@ -25,9 +27,8 @@
 
 1. Read the design specification at
    `docs/superpowers/specs/2026-08-27-dns-resolver-crate-relay-proxy-design.md`.
-2. Confirm the user approved the written specification.
-3. Create the implementation plan with the writing-plans workflow.
-4. Do not edit production code before the plan is approved.
+2. Create the implementation plan with the writing-plans workflow.
+3. Do not edit production code before the plan is approved.
 
 ## Remaining Phases
 
