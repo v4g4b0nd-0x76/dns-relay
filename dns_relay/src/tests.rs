@@ -21,10 +21,12 @@ use crate::{
         craft_nxdomain_response, craft_redirect_response, craft_servfail_response, min_answer_ttl,
         parse_domain, set_ecs_option, with_txid,
     },
-    handler::{HandleQueryParams, HistoryBuffer, handle_query},
+    handler::{
+        Flight, HandleQueryParams, HistoryBuffer, InFlightQueries, handle_query, resolve_query,
+    },
     metric_wrapper::MetricWrapper,
     relay::{RelayInstance, RelayPicker},
-    resolver::{DoqPool, ResolverPicker, create_resolver},
+    resolver::{DoqPool, ResolverPicker, UdpDispatcher, create_resolver},
 };
 
 fn mock_query_foo_test_com() -> Vec<u8> {
@@ -70,6 +72,8 @@ async fn call_handle_query(
         is_vpn_active: &is_vpn_active,
         doq_pool,
         history_buffer: None,
+        udp_dispatcher: &UdpDispatcher::new().unwrap(),
+        in_flight: &Arc::new(InFlightQueries::new()),
     };
     handle_query(&params).await;
 }
@@ -85,6 +89,24 @@ fn parse_domain_from_mock_probe() {
     let (domain, qname_end) = parse_domain(mock_query_google(), 12).expect("parse");
     assert_eq!(domain, "google.com");
     assert_eq!(qname_end, 12 + 1 + 6 + 1 + 3 + 1);
+}
+
+#[tokio::test]
+async fn in_flight_query_publishes_to_follower_and_cleans_up() {
+    let flights = Arc::new(InFlightQueries::new());
+    let key = shared::cache::cache_key_from_query(mock_query_google()).unwrap();
+    let leader = match flights.join(key.clone()) {
+        Flight::Leader(leader) => leader,
+        Flight::Follower(_) => panic!("first query must lead"),
+    };
+    let follower = match flights.join(key.clone()) {
+        Flight::Follower(follower) => follower,
+        Flight::Leader(_) => panic!("second query must follow"),
+    };
+
+    leader.publish(vec![0, 0, 1, 2, 3]);
+    assert_eq!(follower.wait().await, Some(vec![0, 0, 1, 2, 3]));
+    assert_eq!(flights.len(), 0);
 }
 
 #[test]
@@ -443,6 +465,73 @@ async fn integration_cache_hit_skips_upstream() {
 
     upstream_task.await.unwrap();
     assert_eq!(hit_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn concurrent_identical_misses_share_one_upstream_query() {
+    let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+    let upstream_task = tokio::spawn(async move {
+        let mut count = 0;
+        let mut buf = [0u8; 512];
+        if let Ok(Ok((len, peer))) =
+            timeout(Duration::from_millis(200), upstream.recv_from(&mut buf)).await
+        {
+            count += 1;
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let (_, qname_end) = parse_domain(&buf[..len], 12).unwrap();
+            let answer = craft_redirect_response(&buf[..len], qname_end, vec!["1.1.1.1"]).unwrap();
+            upstream.send_to(&answer, peer).await.unwrap();
+        }
+        if timeout(Duration::from_millis(100), upstream.recv_from(&mut buf))
+            .await
+            .is_ok()
+        {
+            count += 1;
+        }
+        count
+    });
+
+    let picker =
+        ResolverPicker::from_healthy(vec![(upstream_addr.to_string(), Duration::from_millis(10))]);
+    let server_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let cache = empty_cache();
+    let rule_trie = Arc::new(DomainTrie::build(&[], &[]));
+    let http = reqwest::Client::new();
+    let doq_pool = DoqPool::new();
+    let dispatcher = UdpDispatcher::new().unwrap();
+    let in_flight = Arc::new(InFlightQueries::new());
+    let is_vpn_active = Arc::new(AtomicBool::new(false));
+    let mut first_query = mock_query_google().to_vec();
+    first_query[..2].copy_from_slice(&[0x10, 0x01]);
+    let mut second_query = mock_query_google().to_vec();
+    second_query[..2].copy_from_slice(&[0x20, 0x02]);
+
+    let first_params = HandleQueryParams {
+        payload: &first_query,
+        src_addr: "127.0.0.1:53001".parse().unwrap(),
+        rule_trie: &rule_trie,
+        resolver_picker: &picker,
+        server_socket: &server_socket,
+        http: &http,
+        cache: &cache,
+        relay_picker: None,
+        metric_wrapper: None,
+        is_vpn_active: &is_vpn_active,
+        doq_pool: &doq_pool,
+        history_buffer: None,
+        udp_dispatcher: &dispatcher,
+        in_flight: &in_flight,
+    };
+    let second_params = HandleQueryParams {
+        payload: &second_query,
+        ..first_params
+    };
+
+    let (first, second) = tokio::join!(resolve_query(&first_params), resolve_query(&second_params));
+    assert_eq!(&first.unwrap()[..2], &[0x10, 0x01]);
+    assert_eq!(&second.unwrap()[..2], &[0x20, 0x02]);
+    assert_eq!(upstream_task.await.unwrap(), 1);
 }
 
 #[tokio::test]

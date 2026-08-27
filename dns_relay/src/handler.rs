@@ -3,7 +3,7 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{
             AtomicBool,
             Ordering::{AcqRel, Acquire, Relaxed, Release},
@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    cache::{ResponseCache, cache_key_from_query_for_client, cache_lookup, cache_store},
+    cache::{CacheKey, ResponseCache, cache_key_from_query_for_client, cache_lookup, cache_store},
     conf::RecordHisotryConf,
     dns::{
         craft_nxdomain_response, craft_redirect_response, parse_a_records, parse_domain, with_txid,
@@ -28,7 +28,7 @@ use shared::{
     dns::{craft_servfail_response, send},
     domain_trie::{DomainTrie, RuleMatch, check_rules},
 };
-use tokio::{io::AsyncWriteExt, net::UdpSocket, time::timeout};
+use tokio::{io::AsyncWriteExt, net::UdpSocket, sync::watch, time::timeout};
 use tracing::{debug, error, warn};
 
 pub struct HandleQueryParams<'a> {
@@ -51,6 +51,90 @@ macro_rules! incr_metric {
             m.$field.fetch_add(1, Relaxed);
         }
     };
+}
+
+type FlightSender = watch::Sender<Option<Vec<u8>>>;
+
+#[derive(Default)]
+pub struct InFlightQueries {
+    entries: Mutex<HashMap<CacheKey, FlightSender>>,
+}
+
+impl InFlightQueries {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn join(self: &Arc<Self>, key: CacheKey) -> Flight {
+        let mut entries = self.entries.lock().unwrap();
+        if let Some(sender) = entries.get(&key) {
+            return Flight::Follower(FlightFollower {
+                receiver: sender.subscribe(),
+            });
+        }
+
+        let (sender, _) = watch::channel(None);
+        entries.insert(key.clone(), sender.clone());
+        Flight::Leader(FlightLeader {
+            key,
+            owner: Arc::clone(self),
+            sender,
+            finished: false,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries
+            .lock()
+            .map(|entries| entries.len())
+            .unwrap_or(0)
+    }
+}
+
+pub enum Flight {
+    Leader(FlightLeader),
+    Follower(FlightFollower),
+}
+
+pub struct FlightLeader {
+    key: CacheKey,
+    owner: Arc<InFlightQueries>,
+    sender: FlightSender,
+    finished: bool,
+}
+
+impl FlightLeader {
+    pub fn publish(mut self, packet: Vec<u8>) {
+        let _ = self.sender.send(Some(packet));
+        self.owner.entries.lock().unwrap().remove(&self.key);
+        self.finished = true;
+    }
+}
+
+impl Drop for FlightLeader {
+    fn drop(&mut self) {
+        if !self.finished
+            && let Ok(mut entries) = self.owner.entries.lock()
+        {
+            entries.remove(&self.key);
+        }
+    }
+}
+
+pub struct FlightFollower {
+    receiver: watch::Receiver<Option<Vec<u8>>>,
+}
+
+impl FlightFollower {
+    pub async fn wait(mut self) -> Option<Vec<u8>> {
+        loop {
+            if let Some(packet) = self.receiver.borrow_and_update().clone() {
+                return Some(packet);
+            }
+            self.receiver.changed().await.ok()?;
+        }
+    }
 }
 
 /// Runs the full drop/redirect/cache/resolve pipeline and returns the reply
