@@ -8,6 +8,7 @@
 - Written specification prepared for user review.
 - Written specification approved by the user.
 - First-release package verification ordering clarified before planning.
+- Checkpointed implementation plan written and self-reviewed.
 - Implementation has not started.
 
 ## Verified Commits
@@ -27,8 +28,10 @@
 
 1. Read the design specification at
    `docs/superpowers/specs/2026-08-27-dns-resolver-crate-relay-proxy-design.md`.
-2. Create the implementation plan with the writing-plans workflow.
-3. Do not edit production code before the plan is approved.
+2. Read
+   `docs/superpowers/plans/2026-08-27-dns-resolver-crate-relay-proxy.md`.
+3. Confirm which execution workflow the user selected.
+4. Do not edit production code before that selection.
 
 ## Remaining Phases
 
