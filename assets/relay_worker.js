@@ -10,6 +10,19 @@ let nextEndpoint = 0;
 
 export default {
   async fetch(request, env) {
+    if (request.method === "GET") {
+      const url = new URL(request.url);
+      if (url.searchParams.get("subnet") !== "1")
+        return new Response("not found", { status: 404 });
+      const subnet = subnetForIp(request.headers.get("cf-connecting-ip"));
+      if (!subnet) return new Response("subnet unavailable", { status: 503 });
+      return new Response(`${subnet}\n`, {
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": "no-store",
+        },
+      });
+    }
     if (request.method !== "POST")
       return new Response("not found", { status: 404 });
     if (!env.RELAY_KEY) {
@@ -54,6 +67,42 @@ export default {
     }
   },
 };
+
+export function subnetForIp(value) {
+  if (!value) return null;
+  const parts = value.split(".");
+  if (parts.length !== 4) return null;
+  const octets = parts.map(Number);
+  if (
+    octets.some(
+      (octet, index) =>
+        !Number.isInteger(octet) ||
+        octet < 0 ||
+        octet > 255 ||
+        String(octet) !== parts[index],
+    )
+  )
+    return null;
+
+  const [a, b, c] = octets;
+  if (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && (b & 0xc0) === 0x40) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 0) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b & 0xfe) === 18) ||
+    (a === 192 && b === 0 && c === 2) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113) ||
+    a >= 224
+  )
+    return null;
+  return `${a}.${b}.${c}.0/24`;
+}
 
 function isValidDnsQuery(packet) {
   return packet && packet.length >= 12 && !(packet[2] & 0x80);

@@ -13,13 +13,14 @@ use std::{
 
 use crate::{
     cache::{
-        CacheKey, ResponseCache, cache_key_from_query_for_client, cache_lookup, cache_lookup_stale,
-        cache_store,
+        CacheKey, ResponseCache, cache_key_from_query_for_subnet, cache_lookup,
+        cache_lookup_stale, cache_store,
     },
     client::resolve_transport,
     conf::RecordHisotryConf,
     dns::{
-        craft_nxdomain_response, craft_redirect_response, parse_a_records, parse_domain, with_txid,
+        craft_nxdomain_response, craft_redirect_response, parse_a_records, parse_domain,
+        public_ipv4_subnet, with_txid,
     },
     errors::Error,
     metric_wrapper::MetricWrapper,
@@ -189,9 +190,10 @@ pub async fn resolve_query<'a>(params: &HandleQueryParams<'a>) -> Option<Vec<u8>
         RuleMatch::None => {}
     }
 
-    // Direct upstream resolution attaches ECS for non-loopback clients, so a
-    // cached answer must stay scoped to that client's network.
-    let cache_key = cache_key_from_query_for_client(payload, Some(src_addr))?;
+    let effective_subnet = relay_picker
+        .map(|picker| picker.effective_subnet(src_addr))
+        .unwrap_or_else(|| public_ipv4_subnet(src_addr));
+    let cache_key = cache_key_from_query_for_subnet(payload, effective_subnet)?;
     let req_txid = [payload[0], payload[1]];
 
     if let Some(cached) = cache_lookup(cache, &cache_key) {
@@ -213,7 +215,7 @@ pub async fn resolve_query<'a>(params: &HandleQueryParams<'a>) -> Option<Vec<u8>
     let resolve_result: Result<Vec<u8>, Error> = resolve_transport(
         &domain,
         payload,
-        src_addr,
+        effective_subnet,
         is_vpn_active.load(std::sync::atomic::Ordering::Relaxed),
         resolver_picker,
         relay_picker,

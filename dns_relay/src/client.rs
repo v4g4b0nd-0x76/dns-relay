@@ -1,16 +1,16 @@
 use crate::{
     Error,
     cache::{
-        ResponseCache, cache_key_from_query, cache_lookup, cache_lookup_stale, cache_store,
-        new_cache,
+        ResponseCache, cache_key_from_query_for_subnet, cache_lookup, cache_lookup_stale,
+        cache_store, new_cache,
     },
     conf::RelayConf,
-    dns::{build_lookup_query, parse_a_records, with_txid},
+    dns::{Ipv4Subnet, build_lookup_query, parse_a_records, set_ecs_ipv4_subnet, with_txid},
     handler::{Flight, InFlightQueries},
     relay::RelayPicker,
     resolver::{DoqPool, ResolverPicker, UdpDispatcher, is_secure_resolver},
 };
-use shared::{build_http_client, dns::Ipv4Subnet};
+use shared::build_http_client;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
@@ -48,7 +48,7 @@ impl DnsResolver {
     async fn build(
         config: ResolverConfig,
         secure_only: bool,
-        _client_subnet: Option<Ipv4Subnet>,
+        client_subnet: Option<Ipv4Subnet>,
     ) -> Result<Self, Error> {
         let relay_enabled = config.relay.as_ref().is_some_and(|relay| relay.enable);
         let has_secure_resolver = config
@@ -78,6 +78,7 @@ impl DnsResolver {
         let http = build_http_client()?;
         let doq_pool = Arc::new(DoqPool::new());
         let udp_dispatcher = Arc::new(UdpDispatcher::new()?);
+        let cache = Arc::new(new_cache());
         let picker = if secure_only {
             ResolverPicker::new_secure(config.resolvers, http.clone(), &doq_pool, &udp_dispatcher)
                 .await?
@@ -85,9 +86,21 @@ impl DnsResolver {
             ResolverPicker::new(config.resolvers, http.clone(), &doq_pool, &udp_dispatcher).await?
         };
         let relay_picker = match config.relay.filter(|relay| relay.enable) {
-            Some(relay) => {
-                Some(RelayPicker::new(&relay, &picker, &http, &doq_pool, &udp_dispatcher).await?)
-            }
+            Some(relay) if secure_only => Some(
+                RelayPicker::new_secure(
+                    &relay,
+                    &picker,
+                    &http,
+                    &doq_pool,
+                    &udp_dispatcher,
+                    client_subnet,
+                    Arc::clone(&cache),
+                )
+                .await?,
+            ),
+            Some(relay) => Some(
+                RelayPicker::new(&relay, &picker, &http, &doq_pool, &udp_dispatcher).await?,
+            ),
             None => None,
         };
 
@@ -97,14 +110,19 @@ impl DnsResolver {
             relay_picker,
             doq_pool,
             udp_dispatcher,
-            cache: Arc::new(new_cache()),
+            cache,
             in_flight: Arc::new(InFlightQueries::new()),
         })
     }
 
     pub async fn resolve_ipv4(&self, domain: &str) -> Result<Vec<Ipv4Addr>, Error> {
         let query = build_lookup_query(domain);
-        let cache_key = cache_key_from_query(&query)
+        let source = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
+        let effective_subnet = self
+            .relay_picker
+            .as_ref()
+            .and_then(|picker| picker.effective_subnet(source));
+        let cache_key = cache_key_from_query_for_subnet(&query, effective_subnet)
             .ok_or_else(|| Error::Other(format!("invalid DNS query for {domain}")))?;
         let parse = |reply: &[u8]| {
             let addresses = parse_a_records(reply);
@@ -132,7 +150,7 @@ impl DnsResolver {
         let reply = match resolve_transport(
             domain,
             &query,
-            SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+            effective_subnet,
             false,
             &self.picker,
             self.relay_picker.as_ref(),
@@ -161,7 +179,7 @@ impl DnsResolver {
 pub(crate) async fn resolve_transport(
     domain: &str,
     payload: &[u8],
-    src_addr: SocketAddr,
+    effective_subnet: Option<Ipv4Subnet>,
     prefer_doh: bool,
     picker: &ResolverPicker,
     relay_picker: Option<&RelayPicker>,
@@ -170,17 +188,19 @@ pub(crate) async fn resolve_transport(
     udp_dispatcher: &UdpDispatcher,
 ) -> Result<Vec<u8>, Error> {
     if let Some(relay_picker) = relay_picker {
+        let payload = set_ecs_ipv4_subnet(payload, effective_subnet)
+            .ok_or_else(|| Error::Other("failed to add ECS to relay query".into()))?;
         tokio::time::timeout(
             relay_picker.timeout_duration(),
-            relay_picker.pick().resolve(domain, payload),
+            relay_picker.pick().resolve(domain, &payload),
         )
         .await
         .map_err(|_| Error::ResolveTimeout)?
     } else {
         picker
-            .resolve_packet(
+            .resolve_packet_for_subnet(
                 payload,
-                src_addr,
+                effective_subnet,
                 prefer_doh,
                 http,
                 doq_pool,
@@ -192,9 +212,10 @@ pub(crate) async fn resolve_transport(
 
 #[cfg(test)]
 mod tests {
-    use super::{DnsResolver, ResolverConfig};
+    use super::{DnsResolver, ResolverConfig, resolve_transport};
     use crate::conf::{Relay, RelayConf, RelayTransport};
     use crate::dns::{craft_redirect_response, parse_a_records, parse_domain};
+    use crate::resolver::{DoqPool, UdpDispatcher};
     use std::{
         net::{Ipv4Addr, SocketAddr},
         sync::{
@@ -262,6 +283,48 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn transport_uses_the_effective_subnet_for_ecs() {
+        let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut query = [0; 512];
+            let (length, peer) = upstream.recv_from(&mut query).await.unwrap();
+            assert!(query[..length].ends_with(&[8, 8, 8]));
+            let (_, qname_end) = parse_domain(&query[..length], 12).unwrap();
+            let response = craft_redirect_response(
+                &query[..length],
+                qname_end,
+                vec!["8.8.4.4"],
+            )
+            .unwrap();
+            upstream.send_to(&response, peer).await.unwrap();
+        });
+        let picker = crate::resolver::ResolverPicker::from_healthy(vec![(
+            upstream_addr.to_string(),
+            std::time::Duration::ZERO,
+        )]);
+        let dispatcher = UdpDispatcher::new().unwrap();
+        let query = crate::dns::build_lookup_query("example.test");
+
+        let response = resolve_transport(
+            "example.test",
+            &query,
+            Some([8, 8, 8]),
+            false,
+            &picker,
+            None,
+            &reqwest::Client::new(),
+            &DoqPool::new(),
+            &dispatcher,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(parse_a_records(&response), [Ipv4Addr::new(8, 8, 4, 4)]);
+        server.await.unwrap();
     }
 
     #[tokio::test]

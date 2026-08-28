@@ -1,7 +1,11 @@
 use crate::{
     Error, ResolverPicker,
+    cache::ResponseCache,
     conf::{Relay, RelayConf, RelayTransport},
-    dns::{build_lookup_query, parse_a_records},
+    dns::{
+        Ipv4Subnet, build_lookup_query, effective_ipv4_subnet, parse_a_records,
+        parse_public_ipv4_subnet,
+    },
     resolver::{DoqPool, UdpDispatcher},
 };
 use aes_gcm::{
@@ -17,12 +21,13 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
-use tracing::error;
+use tokio::time::{MissedTickBehavior, interval};
+use tracing::{error, info, warn};
 use url::Url;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -108,6 +113,58 @@ pub async fn resolve_via_relay(
         )));
     }
     decode_from_relay(key, &body).ok_or_else(|| Error::Config("decrypt failed".into()))
+}
+
+pub(crate) async fn discover_client_subnet(
+    client: &reqwest::Client,
+    relay_url: &str,
+) -> Result<Ipv4Subnet, Error> {
+    let mut url = Url::parse(relay_url)
+        .map_err(|err| Error::Config(format!("invalid relay URL: {err}")))?;
+    url.query_pairs_mut().append_pair("subnet", "1");
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| Error::Config(format!("subnet discovery failed: {err}")))?;
+    if !response.status().is_success() {
+        return Err(Error::Config(format!(
+            "subnet discovery returned {}",
+            response.status()
+        )));
+    }
+    let body = response
+        .bytes()
+        .await
+        .map_err(|err| Error::Config(format!("invalid subnet discovery body: {err}")))?;
+    if body.len() > 32 {
+        return Err(Error::Config(
+            "subnet discovery body is too large".into(),
+        ));
+    }
+    let body = std::str::from_utf8(&body)
+        .map_err(|_| Error::Config("subnet discovery returned invalid text".into()))?;
+    parse_public_ipv4_subnet(body.trim())
+        .ok_or_else(|| Error::Config("subnet discovery returned an invalid IPv4 /24".into()))
+}
+
+fn replace_discovered_subnet(
+    state: &RwLock<Option<Ipv4Subnet>>,
+    cache: &ResponseCache,
+    subnet: Option<Ipv4Subnet>,
+) -> bool {
+    let Ok(mut current) = state.write() else {
+        return false;
+    };
+    if *current == subnet {
+        return false;
+    }
+    *current = subnet;
+    drop(current);
+    if let Ok(mut cache) = cache.lock() {
+        cache.clear();
+    }
+    true
 }
 
 #[derive(Serialize)]
@@ -346,6 +403,8 @@ pub struct RelayPicker {
     instances: Vec<RelayInstance>,
     last_idx: AtomicUsize,
     timeout_duration: Duration,
+    configured_subnet: Option<Ipv4Subnet>,
+    discovered_subnet: Arc<RwLock<Option<Ipv4Subnet>>>,
 }
 
 impl RelayPicker {
@@ -377,7 +436,57 @@ impl RelayPicker {
             instances,
             last_idx: AtomicUsize::new(0),
             timeout_duration: Duration::from_secs(conf.relay_timeout_sec),
+            configured_subnet: None,
+            discovered_subnet: Arc::new(RwLock::new(None)),
         })
+    }
+
+    pub async fn new_secure(
+        conf: &RelayConf,
+        resolver_picker: &ResolverPicker,
+        http: &reqwest::Client,
+        doq_pool: &DoqPool,
+        udp_dispatcher: &UdpDispatcher,
+        configured_subnet: Option<Ipv4Subnet>,
+        cache: Arc<ResponseCache>,
+    ) -> Result<Self, Error> {
+        let mut picker = Self::new(conf, resolver_picker, http, doq_pool, udp_dispatcher).await?;
+        picker.configured_subnet = configured_subnet;
+        if configured_subnet.is_none() {
+            picker.spawn_subnet_discovery(cache);
+        }
+        Ok(picker)
+    }
+
+    fn spawn_subnet_discovery(&self, cache: Arc<ResponseCache>) {
+        let Some(instance) = self
+            .instances
+            .iter()
+            .find(|instance| matches!(instance.transport, RelayTransport::Direct))
+        else {
+            return;
+        };
+        let client = Arc::clone(&instance.relay_client);
+        let url = instance.url.clone();
+        let state = Arc::clone(&self.discovered_subnet);
+        tokio::spawn(async move {
+            let mut refresh = interval(Duration::from_secs(300));
+            refresh.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            loop {
+                refresh.tick().await;
+                let previous = state.read().ok().and_then(|value| *value);
+                let subnet = discover_client_subnet(&client, &url).await.ok();
+                if !replace_discovered_subnet(&state, &cache, subnet) {
+                    continue;
+                }
+                match (previous, subnet) {
+                    (None, Some(_)) => info!("relay client subnet is available"),
+                    (Some(_), Some(_)) => info!("relay client subnet changed"),
+                    (Some(_), None) => warn!("relay client subnet is unavailable"),
+                    (None, None) => {}
+                }
+            }
+        });
     }
 
     pub fn pick(&self) -> &RelayInstance {
@@ -388,12 +497,119 @@ impl RelayPicker {
         self.timeout_duration
     }
 
+    pub fn effective_subnet(&self, client_addr: SocketAddr) -> Option<Ipv4Subnet> {
+        let discovered = self.discovered_subnet.read().ok().and_then(|value| *value);
+        effective_ipv4_subnet(self.configured_subnet, client_addr, discovered)
+    }
+
     #[cfg(test)]
     pub fn from_instances(instances: Vec<RelayInstance>) -> Self {
         Self {
             instances,
             last_idx: AtomicUsize::new(0),
             timeout_duration: Duration::from_secs(0),
+            configured_subnet: None,
+            discovered_subnet: Arc::new(RwLock::new(None)),
         }
+    }
+
+    #[cfg(test)]
+    pub fn from_instances_with_subnets(
+        instances: Vec<RelayInstance>,
+        configured_subnet: Option<Ipv4Subnet>,
+        discovered_subnet: Option<Ipv4Subnet>,
+    ) -> Self {
+        Self {
+            instances,
+            last_idx: AtomicUsize::new(0),
+            timeout_duration: Duration::ZERO,
+            configured_subnet,
+            discovered_subnet: Arc::new(RwLock::new(discovered_subnet)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{discover_client_subnet, replace_discovered_subnet};
+    use crate::{
+        cache::{cache_key_from_query, cache_store, new_cache},
+        dns::{craft_redirect_response, parse_domain},
+    };
+    use shared::mock_query_google;
+    use std::sync::{Arc, RwLock};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    #[tokio::test]
+    async fn relay_discovery_accepts_public_canonical_subnet() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let length = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..length]);
+            assert!(request.starts_with("GET /?subnet=1 HTTP/1.1"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 11\r\nconnection: close\r\n\r\n8.8.8.0/24\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        assert_eq!(
+            discover_client_subnet(&reqwest::Client::new(), &url)
+                .await
+                .unwrap(),
+            [8, 8, 8]
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn relay_discovery_reports_http_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let error = discover_client_subnet(&reqwest::Client::new(), &url)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("503"));
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn discovered_subnet_change_clears_cache_once() {
+        let cache = Arc::new(new_cache());
+        let query = mock_query_google();
+        let key = cache_key_from_query(query).unwrap();
+        let (_, qname_end) = parse_domain(query, 12).unwrap();
+        let answer = craft_redirect_response(query, qname_end, vec!["8.8.8.8"]).unwrap();
+        cache_store(&cache, key.clone(), &answer);
+        let state = RwLock::new(None);
+
+        assert!(replace_discovered_subnet(&state, &cache, Some([8, 8, 8])));
+        assert!(cache.lock().unwrap().is_empty());
+
+        cache_store(&cache, key, &answer);
+        assert!(!replace_discovered_subnet(
+            &state,
+            &cache,
+            Some([8, 8, 8])
+        ));
+        assert!(!cache.lock().unwrap().is_empty());
     }
 }

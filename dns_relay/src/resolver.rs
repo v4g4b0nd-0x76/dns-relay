@@ -23,7 +23,10 @@ use tokio::{
 use crate::{
     conf::ResolverSearchingConf,
     constants::{SEARCH_RESOLVER_INTERVAL, UDP_PROBE_TIMEOUT},
-    dns::{build_lookup_query, parse_a_records, set_ecs_option},
+    dns::{
+        Ipv4Subnet, build_lookup_query, parse_a_records, public_ipv4_subnet,
+        set_ecs_ipv4_subnet,
+    },
     errors::{DohError, Error},
 };
 use quinn::{
@@ -366,6 +369,26 @@ impl ResolverPicker {
         doq_pool: &DoqPool,
         udp_dispatcher: &UdpDispatcher,
     ) -> Result<Vec<u8>, Error> {
+        self.resolve_packet_for_subnet(
+            payload,
+            public_ipv4_subnet(src_addr),
+            prefer_doh,
+            http,
+            doq_pool,
+            udp_dispatcher,
+        )
+        .await
+    }
+
+    pub(crate) async fn resolve_packet_for_subnet(
+        &self,
+        payload: &[u8],
+        effective_subnet: Option<Ipv4Subnet>,
+        prefer_doh: bool,
+        http: &reqwest::Client,
+        doq_pool: &DoqPool,
+        udp_dispatcher: &UdpDispatcher,
+    ) -> Result<Vec<u8>, Error> {
         let candidates = self.candidates(prefer_doh);
         let primary = candidates.first().ok_or(Error::NoHealthyResolvers)?;
         let secondary = candidates.get(1);
@@ -373,7 +396,7 @@ impl ResolverPicker {
             RESOLVE_TIMEOUT,
             resolve_candidates(
                 payload,
-                src_addr,
+                effective_subnet,
                 primary,
                 secondary,
                 http,
@@ -395,14 +418,13 @@ impl ResolverPicker {
         let resolver = resolver
             .map(|r| normalize_resolver(&r))
             .unwrap_or_else(|| self.pick());
-        let src_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
         let query = build_lookup_query(domain);
         let (reply, _len) = timeout(
             RESOLVE_TIMEOUT,
             resolve_from_upstream_inner(
                 &query,
                 &resolver,
-                src_addr,
+                None,
                 http,
                 doq_pool,
                 Some(udp_dispatcher),
@@ -426,7 +448,7 @@ fn hedge_delay(rtt: Duration) -> Duration {
 
 async fn resolve_candidates(
     payload: &[u8],
-    src_addr: SocketAddr,
+    effective_subnet: Option<Ipv4Subnet>,
     primary: &Resolver,
     secondary: Option<&Resolver>,
     http: &reqwest::Client,
@@ -436,7 +458,7 @@ async fn resolve_candidates(
     let mut primary_query = Box::pin(resolve_candidate(
         payload,
         &primary.0,
-        src_addr,
+        effective_subnet,
         http,
         doq_pool,
         udp_dispatcher,
@@ -452,7 +474,7 @@ async fn resolve_candidates(
             Err(_) => resolve_candidate(
                 payload,
                 &secondary.0,
-                src_addr,
+                effective_subnet,
                 http,
                 doq_pool,
                 udp_dispatcher,
@@ -462,7 +484,7 @@ async fn resolve_candidates(
             let mut secondary_query = Box::pin(resolve_candidate(
                 payload,
                 &secondary.0,
-                src_addr,
+                effective_subnet,
                 http,
                 doq_pool,
                 udp_dispatcher,
@@ -484,7 +506,7 @@ async fn resolve_candidates(
 async fn resolve_candidate(
     payload: &[u8],
     resolver: &str,
-    src_addr: SocketAddr,
+    effective_subnet: Option<Ipv4Subnet>,
     http: &reqwest::Client,
     doq_pool: &DoqPool,
     udp_dispatcher: &UdpDispatcher,
@@ -492,7 +514,7 @@ async fn resolve_candidate(
     let (packet, _) = resolve_from_upstream_inner(
         payload,
         resolver,
-        src_addr,
+        effective_subnet,
         http,
         doq_pool,
         Some(udp_dispatcher),
@@ -524,18 +546,27 @@ pub async fn resolve_from_upstream(
     http: &reqwest::Client,
     doq_pool: &DoqPool,
 ) -> Result<(Vec<u8>, usize), Error> {
-    resolve_from_upstream_inner(payload, upstream_resolver, src_addr, http, doq_pool, None).await
+    resolve_from_upstream_inner(
+        payload,
+        upstream_resolver,
+        public_ipv4_subnet(src_addr),
+        http,
+        doq_pool,
+        None,
+    )
+    .await
 }
 
 async fn resolve_from_upstream_inner(
     payload: &[u8],
     upstream_resolver: &str,
-    src_addr: SocketAddr,
+    effective_subnet: Option<Ipv4Subnet>,
     http: &reqwest::Client,
     doq_pool: &DoqPool,
     udp_dispatcher: Option<&UdpDispatcher>,
 ) -> Result<(Vec<u8>, usize), Error> {
-    let final_payload = set_ecs_option(payload, src_addr, None).unwrap_or_else(|| payload.to_vec());
+    let final_payload =
+        set_ecs_ipv4_subnet(payload, effective_subnet).unwrap_or_else(|| payload.to_vec());
 
     if upstream_resolver.starts_with("https://") {
         return resolve_via_doh(http, upstream_resolver, &final_payload).await;

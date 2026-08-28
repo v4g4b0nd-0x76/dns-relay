@@ -757,6 +757,36 @@ fn relay_picker_single_instance_always_returns_it() {
     }
 }
 
+#[test]
+fn relay_picker_effective_subnet_uses_approved_priority() {
+    let instances = vec![RelayInstance::for_test(
+        "https://only.example.workers.dev",
+        test_key(),
+    )];
+    let configured = RelayPicker::from_instances_with_subnets(
+        instances,
+        Some([9, 9, 9]),
+        Some([1, 1, 1]),
+    );
+    assert_eq!(
+        configured.effective_subnet("8.8.4.4:53000".parse().unwrap()),
+        Some([9, 9, 9])
+    );
+
+    let discovered = RelayPicker::from_instances_with_subnets(
+        vec![RelayInstance::for_test(
+            "https://only.example.workers.dev",
+            test_key(),
+        )],
+        None,
+        Some([1, 1, 1]),
+    );
+    assert_eq!(
+        discovered.effective_subnet("192.168.1.2:53000".parse().unwrap()),
+        Some([1, 1, 1])
+    );
+}
+
 #[tokio::test]
 async fn relay_picker_new_rejects_empty_instances() {
     // RelayPicker::new checks for an empty instance list before attempting

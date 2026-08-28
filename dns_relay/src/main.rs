@@ -354,6 +354,7 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
         dns_target,
         record_history_conf,
         secure_only,
+        client_subnet,
     ) = {
         let conf_read = conf.read().unwrap();
         (
@@ -368,6 +369,7 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
             conf_read.dns_target.clone(),
             conf_read.record_history_conf.clone(),
             conf_read.secure_only,
+            conf_read.client_subnet,
         )
     };
     let history_buffer = if record_history {
@@ -412,7 +414,18 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
         .await?
     };
     let relay_pciker = if relay_conf.enable {
-        Some(Arc::new(
+        Some(Arc::new(if secure_only {
+            RelayPicker::new_secure(
+                &relay_conf,
+                &resolver_picker,
+                &http,
+                &Arc::clone(&doq_pool),
+                &udp_dispatcher,
+                client_subnet,
+                Arc::clone(&cache),
+            )
+            .await?
+        } else {
             RelayPicker::new(
                 &relay_conf,
                 &resolver_picker,
@@ -420,8 +433,8 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
                 &Arc::clone(&doq_pool),
                 &udp_dispatcher,
             )
-            .await?,
-        ))
+            .await?
+        }))
     } else {
         None
     };
