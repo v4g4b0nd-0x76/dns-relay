@@ -12,7 +12,8 @@ pub use errors::{DohError, Error};
 pub use handler::handle_query;
 pub use logger::init_logger;
 pub use relay::gen_relay_key;
-pub use resolver::{ResolverPicker, run_resolver_finder};
+pub use resolver::{ResolverPicker, run_resolver_finder, run_secure_resolver_finder};
+pub use shared::dns::Ipv4Subnet;
 
 pub mod constants {
     use std::time::Duration;

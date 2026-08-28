@@ -10,7 +10,7 @@ use dns_relay::{
     init_logger, load_conf, new_cache,
     relay::{RelayPicker, resolve_domain_via_relay},
     resolver::{DoqPool, Resolver, UdpDispatcher},
-    run_resolver_finder,
+    run_resolver_finder, run_secure_resolver_finder,
 };
 use shared::{
     bind_udp_socket, build_http_client,
@@ -353,6 +353,7 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
         obfs_conf,
         dns_target,
         record_history_conf,
+        secure_only,
     ) = {
         let conf_read = conf.read().unwrap();
         (
@@ -366,6 +367,7 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
             conf_read.obfs_conf.clone(),
             conf_read.dns_target.clone(),
             conf_read.record_history_conf.clone(),
+            conf_read.secure_only,
         )
     };
     let history_buffer = if record_history {
@@ -392,13 +394,23 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
     } else {
         Arc::new(AtomicBool::new(false))
     };
-    let resolver_picker = ResolverPicker::new(
-        initial_resolvers,
-        http.clone(),
-        &Arc::clone(&doq_pool),
-        &udp_dispatcher,
-    )
-    .await?;
+    let resolver_picker = if secure_only {
+        ResolverPicker::new_secure(
+            initial_resolvers,
+            http.clone(),
+            &Arc::clone(&doq_pool),
+            &udp_dispatcher,
+        )
+        .await?
+    } else {
+        ResolverPicker::new(
+            initial_resolvers,
+            http.clone(),
+            &Arc::clone(&doq_pool),
+            &udp_dispatcher,
+        )
+        .await?
+    };
     let relay_pciker = if relay_conf.enable {
         Some(Arc::new(
             RelayPicker::new(
@@ -418,14 +430,24 @@ async fn run_server(conf_path: &PathBuf) -> Result<(), Error> {
         let udp_dispatcher = Arc::clone(&udp_dispatcher);
         tokio::spawn(async move {
             let is_searching: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-            if let Err(err) = run_resolver_finder(
-                resolver_searching,
-                healthy_resolvers,
-                is_searching,
-                udp_dispatcher,
-            )
-            .await
-            {
+            let result = if secure_only {
+                run_secure_resolver_finder(
+                    resolver_searching,
+                    healthy_resolvers,
+                    is_searching,
+                    udp_dispatcher,
+                )
+                .await
+            } else {
+                run_resolver_finder(
+                    resolver_searching,
+                    healthy_resolvers,
+                    is_searching,
+                    udp_dispatcher,
+                )
+                .await
+            };
+            if let Err(err) = result {
                 error!("error in resolver finder: {}", err);
             }
         });

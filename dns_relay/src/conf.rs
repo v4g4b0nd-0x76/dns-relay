@@ -1,8 +1,12 @@
 use crate::ResponseCache;
 use crate::errors::Error;
+use crate::resolver::is_secure_resolver;
 use serde::Deserialize;
-use shared::domain_trie::{DomainTrie, referenced_rule_files};
 use shared::metric_wrapper::MetricConf;
+use shared::{
+    dns::{Ipv4Subnet, parse_public_ipv4_subnet},
+    domain_trie::{DomainTrie, referenced_rule_files},
+};
 use std::sync::Arc;
 use std::time::SystemTime;
 use std::{path::PathBuf, sync::RwLock};
@@ -16,6 +20,10 @@ pub struct Conf {
     #[serde(deserialize_with = "shared::deserialize_redirect_list")]
     pub redirect_list: Vec<(String, String)>,
     pub resolvers: Vec<String>,
+    #[serde(default)]
+    pub secure_only: bool,
+    #[serde(default, deserialize_with = "deserialize_client_subnet")]
+    pub client_subnet: Option<Ipv4Subnet>,
     #[serde(default)]
     pub resolver_searching: ResolverSearchingConf,
     #[serde(default)]
@@ -66,6 +74,20 @@ fn default_obfs_bind() -> String {
 
 fn default_false() -> bool {
     false
+}
+
+fn deserialize_client_subnet<'de, D>(deserializer: D) -> Result<Option<Ipv4Subnet>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    value
+        .map(|value| {
+            parse_public_ipv4_subnet(&value).ok_or_else(|| {
+                serde::de::Error::custom("client_subnet must be a canonical public IPv4 /24")
+            })
+        })
+        .transpose()
 }
 
 #[derive(Default, Clone, Deserialize)]
@@ -121,7 +143,43 @@ pub struct ResolverSearchingConf {
 
 pub fn load_conf(path: &PathBuf) -> Result<Conf, Error> {
     let content = std::fs::read_to_string(path)?;
-    toml::from_str(&content).map_err(|err| Error::Config(err.to_string()))
+    let conf: Conf = toml::from_str(&content).map_err(|err| Error::Config(err.to_string()))?;
+    conf.validate()?;
+    Ok(conf)
+}
+
+impl Conf {
+    fn validate(&self) -> Result<(), Error> {
+        if !self.secure_only {
+            return Ok(());
+        }
+        if self.relay_conf.enable
+            && self
+                .relay_conf
+                .relay_instances
+                .iter()
+                .any(|relay| !relay.relay_url.starts_with("https://"))
+        {
+            return Err(Error::Config("secure relay URLs must use https://".into()));
+        }
+        let has_secure_resolver = self
+            .resolvers
+            .iter()
+            .any(|resolver| is_secure_resolver(resolver));
+        if self.relay_conf.enable && self.relay_conf.resolve_manual && !has_secure_resolver {
+            return Err(Error::Config(
+                "secure manual relay bootstrap requires an authenticated resolver".into(),
+            ));
+        }
+        let has_secure_relay =
+            self.relay_conf.enable && !self.relay_conf.relay_instances.is_empty();
+        if !has_secure_resolver && !has_secure_relay {
+            return Err(Error::Config(
+                "secure_only requires an authenticated resolver or relay".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 use arc_swap::ArcSwap;

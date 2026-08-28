@@ -249,6 +249,7 @@ pub type Resolver = (String, Duration); // address - delay
 #[derive(Clone)]
 pub struct ResolverPicker {
     healthy_resolvers: Arc<RwLock<Vec<Resolver>>>,
+    secure_only: bool,
 }
 
 impl ResolverPicker {
@@ -258,10 +259,39 @@ impl ResolverPicker {
         doq_pool: &Arc<DoqPool>,
         udp_dispatcher: &Arc<UdpDispatcher>,
     ) -> Result<Self, Error> {
+        Self::build(resolvers, http, doq_pool, udp_dispatcher, false).await
+    }
+
+    pub async fn new_secure(
+        resolvers: Vec<String>,
+        http: reqwest::Client,
+        doq_pool: &Arc<DoqPool>,
+        udp_dispatcher: &Arc<UdpDispatcher>,
+    ) -> Result<Self, Error> {
+        Self::build(resolvers, http, doq_pool, udp_dispatcher, true).await
+    }
+
+    async fn build(
+        mut resolvers: Vec<String>,
+        http: reqwest::Client,
+        doq_pool: &Arc<DoqPool>,
+        udp_dispatcher: &Arc<UdpDispatcher>,
+        secure_only: bool,
+    ) -> Result<Self, Error> {
+        if secure_only {
+            resolvers.retain(|resolver| is_secure_resolver(resolver));
+        }
+        if resolvers.is_empty() && secure_only {
+            return Ok(Self {
+                healthy_resolvers: Arc::new(RwLock::new(Vec::new())),
+                secure_only,
+            });
+        }
         let sorted_resolvers = test_resolvers(resolvers, http, doq_pool, udp_dispatcher).await?;
 
         Ok(Self {
             healthy_resolvers: Arc::new(RwLock::new(sorted_resolvers)),
+            secure_only,
         })
     }
 
@@ -269,6 +299,14 @@ impl ResolverPicker {
     pub fn from_healthy(resolvers: Vec<Resolver>) -> Self {
         Self {
             healthy_resolvers: Arc::new(RwLock::new(resolvers)),
+            secure_only: false,
+        }
+    }
+    #[cfg(test)]
+    pub fn from_healthy_secure(resolvers: Vec<Resolver>) -> Self {
+        Self {
+            healthy_resolvers: Arc::new(RwLock::new(resolvers)),
+            secure_only: true,
         }
     }
     pub fn healthy_resolvers(&self) -> Arc<RwLock<Vec<Resolver>>> {
@@ -283,7 +321,12 @@ impl ResolverPicker {
 
     pub fn pick(&self) -> String {
         let healthy_resolvers = self.healthy_resolvers.read().unwrap();
-        healthy_resolvers[0].clone().0
+        healthy_resolvers
+            .iter()
+            .find(|(resolver, _)| !self.secure_only || is_secure_resolver(resolver))
+            .expect("resolver picker must contain an eligible resolver")
+            .0
+            .clone()
     }
     pub fn pick_doh_first(&self, prefer_doh: bool) -> String {
         if prefer_doh {
@@ -301,6 +344,9 @@ impl ResolverPicker {
 
     pub fn candidates(&self, prefer_doh: bool) -> Vec<Resolver> {
         let mut resolvers = self.healthy_resolvers.read().unwrap().clone();
+        if self.secure_only {
+            resolvers.retain(|(resolver, _)| is_secure_resolver(resolver));
+        }
         if prefer_doh {
             resolvers
                 .sort_unstable_by_key(|(addr, latency)| (!addr.starts_with("https://"), *latency));
@@ -367,6 +413,10 @@ impl ResolverPicker {
         let ips = parse_a_records(&reply);
         Ok(ips)
     }
+}
+
+pub fn is_secure_resolver(resolver: &str) -> bool {
+    resolver.starts_with("https://") || resolver.starts_with("quic://")
 }
 
 fn hedge_delay(rtt: Duration) -> Duration {
@@ -662,6 +712,39 @@ pub async fn run_resolver_finder(
     is_searching: Arc<AtomicBool>,
     udp_dispatcher: Arc<UdpDispatcher>,
 ) -> Result<(), Error> {
+    run_resolver_finder_inner(
+        resolver_searching,
+        healthy_resolvers,
+        is_searching,
+        udp_dispatcher,
+        false,
+    )
+    .await
+}
+
+pub async fn run_secure_resolver_finder(
+    resolver_searching: ResolverSearchingConf,
+    healthy_resolvers: Arc<RwLock<Vec<Resolver>>>,
+    is_searching: Arc<AtomicBool>,
+    udp_dispatcher: Arc<UdpDispatcher>,
+) -> Result<(), Error> {
+    run_resolver_finder_inner(
+        resolver_searching,
+        healthy_resolvers,
+        is_searching,
+        udp_dispatcher,
+        true,
+    )
+    .await
+}
+
+async fn run_resolver_finder_inner(
+    resolver_searching: ResolverSearchingConf,
+    healthy_resolvers: Arc<RwLock<Vec<Resolver>>>,
+    is_searching: Arc<AtomicBool>,
+    udp_dispatcher: Arc<UdpDispatcher>,
+    secure_only: bool,
+) -> Result<(), Error> {
     let mut tick = interval(Duration::from_secs(
         resolver_searching
             .resfresh_interval
@@ -724,7 +807,8 @@ pub async fn run_resolver_finder(
         let mut candidates: HashSet<String> = HashSet::new();
         for batch in fetched {
             for resolver in batch {
-                if !is_failed_resolver(&resolver) {
+                if (!secure_only || is_secure_resolver(&resolver)) && !is_failed_resolver(&resolver)
+                {
                     candidates.insert(resolver);
                 }
             }
@@ -1104,6 +1188,37 @@ mod tests {
         response[2] |= 0x80;
         response.push(marker);
         socket.send_to(&response, peer).await.unwrap();
+    }
+
+    #[test]
+    fn secure_candidates_exclude_udp_even_if_it_is_fastest() {
+        let picker = ResolverPicker::from_healthy_secure(vec![
+            ("1.1.1.1:53".into(), Duration::from_millis(1)),
+            (
+                "https://dns.google/dns-query".into(),
+                Duration::from_millis(20),
+            ),
+            ("quic://dns.example:853".into(), Duration::from_millis(30)),
+        ]);
+
+        assert_eq!(
+            resolvers_to_addrs(&picker.candidates(false)),
+            ["https://dns.google/dns-query", "quic://dns.example:853"]
+        );
+    }
+
+    #[tokio::test]
+    async fn secure_picker_can_be_empty_for_system_bootstrapped_relay() {
+        let picker = ResolverPicker::new_secure(
+            Vec::new(),
+            reqwest::Client::new(),
+            &Arc::new(DoqPool::new()),
+            &Arc::new(UdpDispatcher::new().unwrap()),
+        )
+        .await
+        .unwrap();
+
+        assert!(picker.candidates(false).is_empty());
     }
 
     #[tokio::test]

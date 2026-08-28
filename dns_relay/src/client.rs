@@ -8,9 +8,9 @@ use crate::{
     dns::{build_lookup_query, parse_a_records, with_txid},
     handler::{Flight, InFlightQueries},
     relay::RelayPicker,
-    resolver::{DoqPool, ResolverPicker, UdpDispatcher},
+    resolver::{DoqPool, ResolverPicker, UdpDispatcher, is_secure_resolver},
 };
-use shared::build_http_client;
+use shared::{build_http_client, dns::Ipv4Subnet};
 use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
@@ -35,15 +35,55 @@ pub struct DnsResolver {
 
 impl DnsResolver {
     pub async fn new(config: ResolverConfig) -> Result<Self, Error> {
-        if config.resolvers.is_empty() {
+        Self::build(config, false, None).await
+    }
+
+    pub async fn new_secure(
+        config: ResolverConfig,
+        client_subnet: Option<Ipv4Subnet>,
+    ) -> Result<Self, Error> {
+        Self::build(config, true, client_subnet).await
+    }
+
+    async fn build(
+        config: ResolverConfig,
+        secure_only: bool,
+        _client_subnet: Option<Ipv4Subnet>,
+    ) -> Result<Self, Error> {
+        let relay_enabled = config.relay.as_ref().is_some_and(|relay| relay.enable);
+        let has_secure_resolver = config
+            .resolvers
+            .iter()
+            .any(|resolver| is_secure_resolver(resolver));
+        if secure_only && !relay_enabled && !has_secure_resolver {
+            return Err(Error::Config(
+                "secure_only requires an authenticated resolver or relay".into(),
+            ));
+        }
+        if secure_only
+            && config
+                .relay
+                .as_ref()
+                .is_some_and(|relay| relay.enable && relay.resolve_manual)
+            && !has_secure_resolver
+        {
+            return Err(Error::Config(
+                "secure manual relay bootstrap requires an authenticated resolver".into(),
+            ));
+        }
+        if config.resolvers.is_empty() && !relay_enabled {
             return Err(Error::Config("at least one resolver is required".into()));
         }
 
         let http = build_http_client()?;
         let doq_pool = Arc::new(DoqPool::new());
         let udp_dispatcher = Arc::new(UdpDispatcher::new()?);
-        let picker =
-            ResolverPicker::new(config.resolvers, http.clone(), &doq_pool, &udp_dispatcher).await?;
+        let picker = if secure_only {
+            ResolverPicker::new_secure(config.resolvers, http.clone(), &doq_pool, &udp_dispatcher)
+                .await?
+        } else {
+            ResolverPicker::new(config.resolvers, http.clone(), &doq_pool, &udp_dispatcher).await?
+        };
         let relay_picker = match config.relay.filter(|relay| relay.enable) {
             Some(relay) => {
                 Some(RelayPicker::new(&relay, &picker, &http, &doq_pool, &udp_dispatcher).await?)
@@ -153,6 +193,7 @@ pub(crate) async fn resolve_transport(
 #[cfg(test)]
 mod tests {
     use super::{DnsResolver, ResolverConfig};
+    use crate::conf::{Relay, RelayConf, RelayTransport};
     use crate::dns::{craft_redirect_response, parse_a_records, parse_domain};
     use std::{
         net::{Ipv4Addr, SocketAddr},
@@ -184,6 +225,43 @@ mod tests {
             }
         });
         (address, queries, server)
+    }
+
+    #[tokio::test]
+    async fn secure_constructor_rejects_udp_only_configuration() {
+        let error = DnsResolver::new_secure(
+            ResolverConfig {
+                resolvers: vec!["1.1.1.1:53".into()],
+                relay: None,
+            },
+            None,
+        )
+        .await;
+
+        assert!(error.is_err());
+    }
+
+    #[tokio::test]
+    async fn secure_constructor_rejects_insecure_manual_relay_bootstrap() {
+        let result = DnsResolver::new_secure(
+            ResolverConfig {
+                resolvers: vec!["1.1.1.1:53".into()],
+                relay: Some(RelayConf {
+                    enable: true,
+                    resolve_manual: true,
+                    relay_instances: vec![Relay {
+                        relay_key: String::new(),
+                        relay_url: "https://relay.example/".into(),
+                        transport: RelayTransport::Direct,
+                    }],
+                    ..Default::default()
+                }),
+            },
+            None,
+        )
+        .await;
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]

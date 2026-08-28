@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    io::Write,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
@@ -16,7 +17,7 @@ use tokio::{net::UdpSocket, time::timeout};
 
 use crate::{
     cache::{ResponseCache, cache_key_from_query_for_client, cache_store},
-    conf::Conf,
+    conf::{Conf, load_conf},
     dns::{
         craft_nxdomain_response, craft_redirect_response, craft_servfail_response, min_answer_ttl,
         parse_a_records, parse_domain, set_ecs_option, with_txid,
@@ -82,6 +83,58 @@ async fn call_handle_query(
 /// matching what `main.rs`/`watch_conf_and_reload` do on load/reload.
 fn trie_from_conf(conf: &Conf) -> Arc<DomainTrie> {
     Arc::new(DomainTrie::build(&conf.drop_list, &conf.redirect_list))
+}
+
+fn load_toml(content: &str) -> Result<Conf, crate::Error> {
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(content.as_bytes()).unwrap();
+    load_conf(&file.path().to_path_buf())
+}
+
+#[test]
+fn secure_config_requires_an_authenticated_path() {
+    let error = match load_toml(
+        "secure_only = true\nresolvers = ['1.1.1.1:53']\ndrop_list = []\nredirect_list = []",
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("insecure-only config must fail"),
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("authenticated resolver or relay")
+    );
+}
+
+#[test]
+fn secure_config_parses_manual_public_subnet() {
+    let conf = load_toml(
+        "secure_only = true\nclient_subnet = '8.8.8.0/24'\nresolvers = ['https://dns.google/dns-query']\ndrop_list = []\nredirect_list = []",
+    )
+    .unwrap();
+    assert_eq!(conf.client_subnet, Some([8, 8, 8]));
+}
+
+#[test]
+fn secure_config_rejects_plain_http_relay() {
+    let error = match load_toml(
+        "secure_only = true\nresolvers = []\ndrop_list = []\nredirect_list = []\n[relay_conf]\nenable = true\nresolve_manual = false\n[[relay_conf.relay_instances]]\nrelay_key = ''\nrelay_url = 'http://relay.example/'\ntransport = 'direct'",
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("plain HTTP relay must fail"),
+    };
+    assert!(error.to_string().contains("must use https://"));
+}
+
+#[test]
+fn secure_manual_relay_bootstrap_requires_secure_resolver() {
+    let error = match load_toml(
+        "secure_only = true\nresolvers = []\ndrop_list = []\nredirect_list = []\n[relay_conf]\nenable = true\nresolve_manual = true\n[[relay_conf.relay_instances]]\nrelay_key = ''\nrelay_url = 'https://relay.example/'\ntransport = 'direct'",
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("manual relay bootstrap needs a secure resolver"),
+    };
+    assert!(error.to_string().contains("manual relay bootstrap"));
 }
 
 #[test]
@@ -245,13 +298,13 @@ fn set_ecs_option_rewrites_real_client_ip() {
     // A non-loopback client should always get its actual subnet, regardless
     // of the fabricate_public_ip_for_loopback setting.
     let query = mock_query_google().to_vec();
-    let client = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 42)), 53000);
+    let client = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 4, 42)), 53000);
     let modified = set_ecs_option(&query, client, None).expect("ecs");
 
     let old_ar = ((query[10] as u16) << 8) | query[11] as u16;
     let new_ar = ((modified[10] as u16) << 8) | modified[11] as u16;
     assert_eq!(new_ar, old_ar + 1);
-    assert!(modified.ends_with(&[198, 51, 100]));
+    assert!(modified.ends_with(&[8, 8, 4]));
 }
 
 #[test]
