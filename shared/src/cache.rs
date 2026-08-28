@@ -10,8 +10,8 @@ use lru::LruCache;
 use crate::{
     constants::{CACHE_CAPACITY, CACHE_STALE_TTL, CACHE_TTL_MAX, CACHE_TTL_MIN},
     dns::{
-        age_response_ttls, find_opt_record, matches_domain_pattern, parse_domain,
-        response_cache_ttl,
+        Ipv4Subnet, age_response_ttls, find_opt_record, matches_domain_pattern, parse_domain,
+        public_ipv4_subnet, response_cache_ttl,
     },
 };
 
@@ -52,6 +52,13 @@ pub fn cache_key_from_query_for_client(
     payload: &[u8],
     client_addr: Option<SocketAddr>,
 ) -> Option<CacheKey> {
+    cache_key_from_query_for_subnet(payload, client_addr.and_then(public_ipv4_subnet))
+}
+
+pub fn cache_key_from_query_for_subnet(
+    payload: &[u8],
+    client_subnet: Option<Ipv4Subnet>,
+) -> Option<CacheKey> {
     if payload.len() < 12 {
         return None;
     }
@@ -65,13 +72,6 @@ pub fn cache_key_from_query_for_client(
     let dnssec_ok = find_opt_record(payload)
         .map(|opt| opt.flags & 0x8000 != 0)
         .unwrap_or(false);
-    let client_subnet = client_addr.and_then(|addr| match addr.ip() {
-        std::net::IpAddr::V4(ip) if !ip.is_loopback() => {
-            let octets = ip.octets();
-            Some([octets[0], octets[1], octets[2]])
-        }
-        _ => None,
-    });
     Some(CacheKey {
         name,
         qtype,

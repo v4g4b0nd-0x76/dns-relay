@@ -1,19 +1,68 @@
 use std::time::{Duration, Instant};
 
 use crate::cache::{
-    CacheKey, cache_key_from_query, cache_key_from_query_for_client, cache_lookup,
-    cache_lookup_stale, cache_store, clamp_cache_ttl,
+    CacheKey, cache_key_from_query, cache_key_from_query_for_client,
+    cache_key_from_query_for_subnet, cache_lookup, cache_lookup_stale, cache_store,
+    clamp_cache_ttl,
 };
 use crate::constants::{CACHE_TTL_MAX, CACHE_TTL_MIN};
 use crate::dns::{
-    age_response_ttls, craft_redirect_response, craft_servfail_response, min_answer_ttl,
-    parse_domain, response_cache_ttl, with_txid,
+    age_response_ttls, craft_redirect_response, craft_servfail_response, effective_ipv4_subnet,
+    min_answer_ttl, parse_domain, parse_public_ipv4_subnet, response_cache_ttl,
+    response_has_only_unspecified_addresses, set_ecs_ipv4_subnet, with_txid,
 };
 use crate::domain_trie::{DomainTrie, DomainTriePolicy};
 use crate::{empty_cache, mock_query_google};
 use std::io::Write;
 use std::net::SocketAddr;
 use tempfile::NamedTempFile;
+
+#[test]
+fn public_ipv4_subnets_are_canonical_and_global() {
+    assert_eq!(parse_public_ipv4_subnet("8.8.8.0/24"), Some([8, 8, 8]));
+    assert_eq!(parse_public_ipv4_subnet("8.8.8.8/24"), None);
+    assert_eq!(parse_public_ipv4_subnet("10.0.0.0/24"), None);
+    assert_eq!(parse_public_ipv4_subnet("192.0.2.0/24"), None);
+    assert_eq!(parse_public_ipv4_subnet("2001:db8::/56"), None);
+}
+
+#[test]
+fn effective_subnet_uses_override_global_client_then_discovery() {
+    let global: SocketAddr = "8.8.4.4:53000".parse().unwrap();
+    let private: SocketAddr = "192.168.1.20:53000".parse().unwrap();
+
+    assert_eq!(
+        effective_ipv4_subnet(Some([9, 9, 9]), global, Some([1, 1, 1])),
+        Some([9, 9, 9])
+    );
+    assert_eq!(
+        effective_ipv4_subnet(None, global, Some([1, 1, 1])),
+        Some([8, 8, 4])
+    );
+    assert_eq!(
+        effective_ipv4_subnet(None, private, Some([1, 1, 1])),
+        Some([1, 1, 1])
+    );
+    assert_eq!(effective_ipv4_subnet(None, private, None), None);
+}
+
+#[test]
+fn explicit_subnet_drives_ecs_and_cache_scope() {
+    let query = mock_query_google();
+    let with_ecs = set_ecs_ipv4_subnet(query, Some([8, 8, 8])).unwrap();
+
+    assert!(with_ecs.ends_with(&[8, 8, 8]));
+    assert_eq!(
+        cache_key_from_query_for_subnet(query, Some([8, 8, 8]))
+            .unwrap()
+            .client_subnet,
+        Some([8, 8, 8])
+    );
+    assert_ne!(
+        cache_key_from_query_for_subnet(query, Some([8, 8, 8])).unwrap(),
+        cache_key_from_query_for_subnet(query, Some([1, 1, 1])).unwrap()
+    );
+}
 
 #[test]
 fn clamp_cache_ttl_bounds() {
@@ -109,6 +158,41 @@ fn negative_response_with_soa(rcode: u8) -> Vec<u8> {
     packet
 }
 
+fn aaaa_response(address: [u8; 16]) -> Vec<u8> {
+    let mut packet = mock_query_google().to_vec();
+    packet[2] = 0x81;
+    packet[3] = 0x80;
+    packet[6..8].copy_from_slice(&1u16.to_be_bytes());
+    packet.extend_from_slice(&[
+        0xc0, 0x0c, // compressed owner name
+        0x00, 0x1c, // AAAA
+        0x00, 0x01, // IN
+        0x00, 0x00, 0x00, 0x3c, // TTL 60
+        0x00, 0x10, // 16-byte address
+    ]);
+    packet.extend_from_slice(&address);
+    packet
+}
+
+#[test]
+fn only_unspecified_addresses_are_unusable() {
+    let query = mock_query_google();
+    let (_, qname_end) = parse_domain(query, 12).unwrap();
+    let zero = craft_redirect_response(query, qname_end, vec!["0.0.0.0"]).unwrap();
+    let mixed = craft_redirect_response(query, qname_end, vec!["0.0.0.0", "8.8.8.8"]).unwrap();
+    let private = craft_redirect_response(query, qname_end, vec!["192.168.1.1"]).unwrap();
+
+    assert!(response_has_only_unspecified_addresses(&zero));
+    assert!(!response_has_only_unspecified_addresses(&mixed));
+    assert!(!response_has_only_unspecified_addresses(&private));
+    assert!(!response_has_only_unspecified_addresses(
+        &negative_response_with_soa(3)
+    ));
+    assert!(response_has_only_unspecified_addresses(&aaaa_response(
+        [0; 16]
+    )));
+}
+
 #[test]
 fn negative_cache_ttl_uses_soa_minimum() {
     assert_eq!(response_cache_ttl(&negative_response_with_soa(3)), Some(30));
@@ -139,9 +223,9 @@ fn cache_does_not_store_servfail_or_truncated_responses() {
 #[test]
 fn direct_cache_key_is_scoped_to_client_subnet() {
     let query = mock_query_google();
-    let first: SocketAddr = "192.0.2.25:53000".parse().unwrap();
-    let same_subnet: SocketAddr = "192.0.2.99:53001".parse().unwrap();
-    let other_subnet: SocketAddr = "192.0.3.25:53000".parse().unwrap();
+    let first: SocketAddr = "8.8.8.25:53000".parse().unwrap();
+    let same_subnet: SocketAddr = "8.8.8.99:53001".parse().unwrap();
+    let other_subnet: SocketAddr = "8.8.9.25:53000".parse().unwrap();
 
     let key = cache_key_from_query_for_client(query, Some(first)).unwrap();
     assert_eq!(

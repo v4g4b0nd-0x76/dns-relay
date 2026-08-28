@@ -1,6 +1,55 @@
 use rand::RngExt;
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::Duration,
+};
 use tokio::net::UdpSocket;
+
+pub type Ipv4Subnet = [u8; 3];
+
+pub fn parse_public_ipv4_subnet(value: &str) -> Option<Ipv4Subnet> {
+    let (address, prefix) = value.split_once('/')?;
+    if prefix != "24" {
+        return None;
+    }
+    let address = address.parse::<Ipv4Addr>().ok()?;
+    let octets = address.octets();
+    (octets[3] == 0 && is_public_ipv4(address)).then_some([octets[0], octets[1], octets[2]])
+}
+
+pub fn public_ipv4_subnet(addr: SocketAddr) -> Option<Ipv4Subnet> {
+    let IpAddr::V4(address) = addr.ip() else {
+        return None;
+    };
+    let octets = address.octets();
+    is_public_ipv4(address).then_some([octets[0], octets[1], octets[2]])
+}
+
+pub fn effective_ipv4_subnet(
+    override_subnet: Option<Ipv4Subnet>,
+    client_addr: SocketAddr,
+    discovered: Option<Ipv4Subnet>,
+) -> Option<Ipv4Subnet> {
+    override_subnet
+        .or_else(|| public_ipv4_subnet(client_addr))
+        .or(discovered)
+}
+
+fn is_public_ipv4(address: Ipv4Addr) -> bool {
+    let [a, b, _, _] = address.octets();
+    !(address.is_unspecified()
+        || address.is_private()
+        || address.is_loopback()
+        || address.is_link_local()
+        || address.is_broadcast()
+        || address.is_documentation()
+        || address.is_multicast()
+        || a == 0
+        || (a == 100 && b & 0xc0 == 0x40)
+        || (a == 192 && b == 0)
+        || (a == 198 && b & 0xfe == 18)
+        || a >= 240)
+}
 
 #[inline(always)]
 pub fn parse_domain(payload: &[u8], mut offset: usize) -> Option<(String, usize)> {
@@ -170,8 +219,6 @@ pub fn build_lookup_query(domain: &str) -> Vec<u8> {
     packet
 }
 
-use std::net::Ipv4Addr;
-
 /// Skips a DNS name at `offset`, handling both plain labels and compression pointers.
 /// Returns the offset just past the name.
 fn skip_name(buf: &[u8], offset: usize) -> Option<usize> {
@@ -192,6 +239,50 @@ fn skip_name(buf: &[u8], offset: usize) -> Option<usize> {
         }
     }
     Some(pos)
+}
+
+pub fn response_has_only_unspecified_addresses(packet: &[u8]) -> bool {
+    if packet.len() < 12 {
+        return false;
+    }
+    let qdcount = u16::from_be_bytes([packet[4], packet[5]]) as usize;
+    let ancount = u16::from_be_bytes([packet[6], packet[7]]) as usize;
+    let mut offset = 12;
+
+    for _ in 0..qdcount {
+        let Some(name_end) = skip_name(packet, offset) else {
+            return false;
+        };
+        offset = name_end + 4;
+        if offset > packet.len() {
+            return false;
+        }
+    }
+
+    let mut address_count = 0;
+    let mut has_non_unspecified = false;
+    for _ in 0..ancount {
+        let Some(name_end) = skip_name(packet, offset) else {
+            return false;
+        };
+        if name_end + 10 > packet.len() {
+            return false;
+        }
+        let rtype = u16::from_be_bytes([packet[name_end], packet[name_end + 1]]);
+        let rdlength = u16::from_be_bytes([packet[name_end + 8], packet[name_end + 9]]) as usize;
+        let rdata_start = name_end + 10;
+        let rdata_end = rdata_start + rdlength;
+        if rdata_end > packet.len() {
+            return false;
+        }
+        if (rtype == 1 && rdlength == 4) || (rtype == 28 && rdlength == 16) {
+            address_count += 1;
+            has_non_unspecified |= packet[rdata_start..rdata_end].iter().any(|byte| *byte != 0);
+        }
+        offset = rdata_end;
+    }
+
+    address_count > 0 && !has_non_unspecified
 }
 
 /// Extracts all A-record IPs from a raw DNS response
@@ -535,29 +626,32 @@ pub fn set_ecs_option(
     client_addr: SocketAddr,
     fabricate_public_ip_for_loopback: Option<[u8; 4]>,
 ) -> Option<Vec<u8>> {
-    let ip_bytes = match client_addr.ip() {
+    let subnet = match client_addr.ip() {
         std::net::IpAddr::V4(ipv4) => {
-            let octets = ipv4.octets();
             if ipv4.is_unspecified() {
-                return Some(payload.to_vec());
-            }
-            if ipv4.is_loopback() {
-                match fabricate_public_ip_for_loopback {
-                    Some(fake) => fake,
-                    None => return Some(payload.to_vec()), // leave ECS out for loopback/test clients
-                }
+                None
+            } else if ipv4.is_loopback() {
+                fabricate_public_ip_for_loopback.map(|[a, b, c, _]| [a, b, c])
             } else {
-                octets
+                public_ipv4_subnet(client_addr)
             }
         }
         std::net::IpAddr::V6(_) => return None, // TODO: add AAAA/IPv6 ECS (family 2) support
+    };
+    set_ecs_ipv4_subnet(payload, subnet)
+}
+
+#[inline(always)]
+pub fn set_ecs_ipv4_subnet(payload: &[u8], subnet: Option<Ipv4Subnet>) -> Option<Vec<u8>> {
+    let Some(ip_bytes) = subnet else {
+        return Some(payload.to_vec());
     };
 
     let mut ecs_data = Vec::with_capacity(8);
     ecs_data.extend_from_slice(&[0x00, 0x01]); // FAMILY = 1 (IPv4)
     ecs_data.push(24); // SOURCE PREFIX-LENGTH - /24 is the common privacy-preserving default
     ecs_data.push(0); // SCOPE PREFIX-LENGTH - 0 in queries, filled in by upstream in responses
-    ecs_data.extend_from_slice(&ip_bytes[0..3]); // truncated address per RFC 7871 section 6
+    ecs_data.extend_from_slice(&ip_bytes); // truncated address per RFC 7871 section 6
 
     match find_opt_record(payload) {
         Some(existing) => {
