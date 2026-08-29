@@ -12,7 +12,176 @@ use crate::{
     paths::read_request_at,
 };
 
+#[cfg(target_os = "macos")]
+use crate::paths::{invoking_uid, user_home};
+#[cfg(target_os = "macos")]
+use crate::platform::{
+    CommandSpec,
+    macos::{MacosServiceManager, elevation_command},
+};
+
 const REQUEST_ID: &str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_launchd_commands_use_only_fixed_paths_and_label() {
+    let macos = MacosServiceManager::new(PlatformPaths::current().unwrap());
+
+    assert_eq!(
+        macos.bootout_command(),
+        CommandSpec::new("/bin/launchctl", ["bootout", "system/com.dns-relay.gui"])
+    );
+    assert_eq!(
+        macos.enable_command(),
+        CommandSpec::new("/bin/launchctl", ["enable", "system/com.dns-relay.gui"])
+    );
+    assert_eq!(
+        macos.bootstrap_command(),
+        CommandSpec::new(
+            "/bin/launchctl",
+            [
+                "bootstrap",
+                "system",
+                "/Library/LaunchDaemons/com.dns-relay.gui.plist"
+            ]
+        )
+    );
+    assert_eq!(
+        macos.restart_command(),
+        CommandSpec::new(
+            "/bin/launchctl",
+            ["kickstart", "-k", "system/com.dns-relay.gui"]
+        )
+    );
+    assert_eq!(
+        macos.status_command(),
+        CommandSpec::new("/bin/launchctl", ["print", "system/com.dns-relay.gui"])
+    );
+    assert_eq!(
+        macos.activation_commands(),
+        vec![
+            macos.enable_command(),
+            macos.bootstrap_command(),
+            macos.restart_command(),
+        ]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_elevation_keeps_helper_path_and_uuid_out_of_applescript_source() {
+    let helper = Path::new("/Applications/DNS Relay's 日本.app/Contents/MacOS/dns_relay_admin");
+    let command = elevation_command(helper, REQUEST_ID).unwrap();
+
+    assert_eq!(command.program, Path::new("/usr/bin/osascript"));
+    assert_eq!(
+        command.args,
+        vec![
+            "-e",
+            "on run argv\nset helperPath to item 1 of argv\nset requestId to item 2 of argv\ndo shell script quoted form of helperPath & \" request --request-id \" & quoted form of requestId with administrator privileges\nend run",
+            "/Applications/DNS Relay's 日本.app/Contents/MacOS/dns_relay_admin",
+            REQUEST_ID,
+        ]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_elevation_rejects_non_uuid_request_ids() {
+    assert!(
+        elevation_command(
+            Path::new("/Applications/DNS Relay.app/dns_relay_admin"),
+            "../shell"
+        )
+        .is_err()
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_elevated_paths_resolve_to_the_console_user() {
+    use std::os::unix::fs::MetadataExt;
+
+    let effective_uid = unsafe { libc::geteuid() };
+    let expected_uid = if effective_uid == 0 {
+        fs::metadata("/dev/console").unwrap().uid()
+    } else {
+        effective_uid
+    };
+
+    assert_eq!(invoking_uid().unwrap(), expected_uid);
+    assert!(user_home().unwrap().is_absolute());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_install_payload_atomically_writes_private_fixed_files() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    let resolver = root.path().join("bundled dns_relay");
+    let helper = root.path().join("bundled dns_relay_admin");
+    fs::write(&resolver, "resolver-v1").unwrap();
+    fs::write(&helper, "helper-v1").unwrap();
+    let macos = MacosServiceManager::new(paths.clone());
+
+    macos
+        .install_payload(&resolver, &helper, VALID_CONFIG)
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&paths.installed_binary).unwrap(),
+        "resolver-v1"
+    );
+    assert_eq!(
+        fs::read_to_string(&paths.admin_binary).unwrap(),
+        "helper-v1"
+    );
+    assert_eq!(fs::read_to_string(&paths.config).unwrap(), VALID_CONFIG);
+    assert!(
+        fs::read_to_string(&paths.service_definition)
+            .unwrap()
+            .contains("<string>com.dns-relay.gui</string>")
+    );
+    assert_eq!(
+        fs::metadata(&paths.config).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(&paths.service_definition)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_update_payload_preserves_existing_config() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    fs::create_dir_all(paths.config.parent().unwrap()).unwrap();
+    fs::write(&paths.config, "keep-me").unwrap();
+    let resolver = root.path().join("dns_relay");
+    let helper = root.path().join("dns_relay_admin");
+    fs::write(&resolver, "resolver-v2").unwrap();
+    fs::write(&helper, "helper-v2").unwrap();
+
+    MacosServiceManager::new(paths.clone())
+        .update_payload(&resolver, &helper)
+        .unwrap();
+
+    assert_eq!(fs::read_to_string(&paths.config).unwrap(), "keep-me");
+    assert_eq!(
+        fs::read_to_string(&paths.installed_binary).unwrap(),
+        "resolver-v2"
+    );
+    assert_eq!(
+        fs::read_to_string(&paths.admin_binary).unwrap(),
+        "helper-v2"
+    );
+}
 
 #[test]
 fn action_rejects_unknown_variants() {

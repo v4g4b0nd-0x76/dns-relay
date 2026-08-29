@@ -1,7 +1,10 @@
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
 };
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use std::env;
 
 use uuid::Uuid;
 
@@ -10,6 +13,7 @@ use crate::{AdminError, AdminRequest, AdminResponse};
 #[derive(Debug, Clone)]
 pub struct PlatformPaths {
     pub installed_binary: PathBuf,
+    pub admin_binary: PathBuf,
     pub config: PathBuf,
     pub backup: PathBuf,
     pub logs: PathBuf,
@@ -58,6 +62,7 @@ impl PlatformPaths {
         let user = root.join("user");
         Self {
             installed_binary: system.join("dns_relay"),
+            admin_binary: system.join("dns_relay_admin"),
             config: system.join("conf.toml"),
             backup: system.join("conf.toml.bak"),
             logs: system.join("logs"),
@@ -124,7 +129,7 @@ fn validate_unix_request(metadata: &fs::Metadata) -> Result<(), AdminError> {
             "request file mode must be 0600".into(),
         ));
     }
-    if metadata.uid() != unsafe { libc::geteuid() } {
+    if metadata.uid() != expected_request_owner()? {
         return Err(AdminError::InvalidRequestFile(
             "request file is not owned by the invoking user".into(),
         ));
@@ -133,15 +138,71 @@ fn validate_unix_request(metadata: &fs::Metadata) -> Result<(), AdminError> {
 }
 
 #[cfg(target_os = "macos")]
+fn expected_request_owner() -> Result<u32, AdminError> {
+    invoking_uid()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn expected_request_owner() -> Result<u32, AdminError> {
+    Ok(unsafe { libc::geteuid() })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn invoking_uid() -> Result<u32, AdminError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let effective_uid = unsafe { libc::geteuid() };
+    if effective_uid != 0 {
+        return Ok(effective_uid);
+    }
+    let console_uid = fs::metadata("/dev/console")?.uid();
+    if console_uid == 0 {
+        Err(AdminError::Operation(
+            "no logged-in macOS console user is available".into(),
+        ))
+    } else {
+        Ok(console_uid)
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn user_home() -> Result<PathBuf, AdminError> {
+    use std::{
+        ffi::{CStr, OsStr},
+        mem::MaybeUninit,
+        os::unix::ffi::OsStrExt,
+        ptr,
+    };
+
+    let uid = invoking_uid()?;
+    let mut password = MaybeUninit::<libc::passwd>::uninit();
+    let mut result = ptr::null_mut();
+    let mut buffer = vec![0_u8; 16 * 1024];
+    let code = unsafe {
+        libc::getpwuid_r(
+            uid,
+            password.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if code != 0 || result.is_null() {
+        return Err(AdminError::Operation(format!(
+            "could not resolve home directory for uid {uid}"
+        )));
+    }
+    let directory = unsafe { CStr::from_ptr((*result).pw_dir) };
+    Ok(PathBuf::from(OsStr::from_bytes(directory.to_bytes())))
+}
+
+#[cfg(target_os = "macos")]
 fn platform_paths() -> Result<PlatformPaths, AdminError> {
     let system = PathBuf::from("/Library/Application Support/DNS Relay");
-    let user = PathBuf::from(
-        env::var_os("HOME")
-            .ok_or_else(|| AdminError::InvalidRequestFile("HOME is unavailable".into()))?,
-    )
-    .join("Library/Application Support/DNS Relay");
+    let user = user_home()?.join("Library/Application Support/DNS Relay");
     Ok(PlatformPaths {
         installed_binary: system.join("dns_relay"),
+        admin_binary: system.join("dns_relay_admin"),
         config: system.join("conf.toml"),
         backup: system.join("conf.toml.bak"),
         logs: system.join("logs"),
@@ -160,6 +221,7 @@ fn platform_paths() -> Result<PlatformPaths, AdminError> {
         .join("dns-relay-gui");
     Ok(PlatformPaths {
         installed_binary: system.join("dns_relay"),
+        admin_binary: system.join("dns_relay_admin"),
         config: system.join("conf.toml"),
         backup: system.join("conf.toml.bak"),
         logs: PathBuf::from("/var/log/dns-relay-gui"),
@@ -188,6 +250,7 @@ fn platform_paths() -> Result<PlatformPaths, AdminError> {
     .join("DNS Relay");
     Ok(PlatformPaths {
         installed_binary: program_files.join("dns_relay.exe"),
+        admin_binary: program_files.join("dns_relay_admin.exe"),
         config: program_data.join("conf.toml"),
         backup: program_data.join("conf.toml.bak"),
         logs: program_data.join("logs"),

@@ -1,5 +1,6 @@
 pub mod apply;
 mod paths;
+pub mod platform;
 pub mod process;
 
 use std::{fmt, fs, io};

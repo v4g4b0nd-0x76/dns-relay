@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.dns-relay.gui</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/Application Support/DNS Relay/dns_relay</string>
+    <string>--conf</string>
+    <string>/Library/Application Support/DNS Relay/conf.toml</string>
+    <string>run</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Library/Application Support/DNS Relay</string>
+  <key>StandardOutPath</key>
+  <string>/Library/Application Support/DNS Relay/logs/dns-relay.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Library/Application Support/DNS Relay/logs/dns-relay.err.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
