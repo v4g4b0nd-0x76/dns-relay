@@ -63,6 +63,22 @@ where
         .collect()
 }
 
+pub fn serialize_redirect_list<S>(
+    entries: &[(String, String)],
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::Serialize;
+
+    entries
+        .iter()
+        .map(|(domain, target)| format!("{domain}:{target}"))
+        .collect::<Vec<_>>()
+        .serialize(serializer)
+}
+
 pub fn bind_udp_socket(addr: &str) -> Result<UdpSocket, Error> {
     let sock_addr: SocketAddr = addr
         .parse()
