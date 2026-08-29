@@ -1,4 +1,6 @@
+pub mod apply;
 mod paths;
+pub mod process;
 
 use std::{fmt, fs, io};
 
@@ -52,6 +54,7 @@ pub enum AdminError {
     InvalidRequestFile(String),
     Io(io::Error),
     Json(serde_json::Error),
+    Operation(String),
     Unsupported,
 }
 
@@ -62,6 +65,7 @@ impl fmt::Display for AdminError {
             Self::InvalidRequestFile(message) => formatter.write_str(message),
             Self::Io(error) => write!(formatter, "request I/O failed: {error}"),
             Self::Json(error) => write!(formatter, "invalid request JSON: {error}"),
+            Self::Operation(message) => formatter.write_str(message),
             Self::Unsupported => formatter.write_str("service management is not implemented"),
         }
     }

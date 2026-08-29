@@ -51,6 +51,21 @@ impl PlatformPaths {
         )?;
         Ok(())
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(root: &Path) -> Self {
+        let system = root.join("system");
+        let user = root.join("user");
+        Self {
+            installed_binary: system.join("dns_relay"),
+            config: system.join("conf.toml"),
+            backup: system.join("conf.toml.bak"),
+            logs: system.join("logs"),
+            service_definition: system.join("service"),
+            request_dir: user.join("requests"),
+            response_dir: user.join("responses"),
+        }
+    }
 }
 
 pub(crate) fn read_request_at(
