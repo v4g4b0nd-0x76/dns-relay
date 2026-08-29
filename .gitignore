@@ -1,7 +1,12 @@
 /target
 logs/
 conf.toml
+.DS_Store
 
 **/target
 **/logs/
 **/conf.toml
+
+gui/node_modules/
+gui/playwright-report/
+gui/test-results/
