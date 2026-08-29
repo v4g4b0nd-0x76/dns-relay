@@ -144,14 +144,16 @@ pub fn craft_redirect_response(
     resp[6] = (ancount >> 8) as u8;
     resp[7] = (ancount & 0xFF) as u8;
 
+    let mut answers = Vec::with_capacity(16 * ips.len());
     for ip in &ips {
-        resp.extend_from_slice(&[0xC0, 0x0C]); // name = pointer to offset 12 (query name)
-        resp.extend_from_slice(&qtype);
-        resp.extend_from_slice(&qclass);
-        resp.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C]); // TTL = 60s
-        resp.extend_from_slice(&[0x00, 0x04]); // RDLENGTH
-        resp.extend_from_slice(&ip.octets());
+        answers.extend_from_slice(&[0xC0, 0x0C]); // name = pointer to offset 12 (query name)
+        answers.extend_from_slice(&qtype);
+        answers.extend_from_slice(&qclass);
+        answers.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C]); // TTL = 60s
+        answers.extend_from_slice(&[0x00, 0x04]); // RDLENGTH
+        answers.extend_from_slice(&ip.octets());
     }
+    resp.splice(qname_end + 4..qname_end + 4, answers);
 
     Some(resp)
 }

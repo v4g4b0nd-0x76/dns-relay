@@ -8,7 +8,7 @@ use crate::cache::{
 use crate::constants::{CACHE_TTL_MAX, CACHE_TTL_MIN};
 use crate::dns::{
     age_response_ttls, craft_redirect_response, craft_servfail_response, effective_ipv4_subnet,
-    min_answer_ttl, parse_domain, parse_public_ipv4_subnet, response_cache_ttl,
+    min_answer_ttl, parse_a_records, parse_domain, parse_public_ipv4_subnet, response_cache_ttl,
     response_has_only_unspecified_addresses, set_ecs_ipv4_subnet, with_txid,
 };
 use crate::domain_trie::{DomainTrie, DomainTriePolicy};
@@ -61,6 +61,18 @@ fn explicit_subnet_drives_ecs_and_cache_scope() {
     assert_ne!(
         cache_key_from_query_for_subnet(query, Some([8, 8, 8])).unwrap(),
         cache_key_from_query_for_subnet(query, Some([1, 1, 1])).unwrap()
+    );
+}
+
+#[test]
+fn redirect_response_places_answers_before_edns() {
+    let query = set_ecs_ipv4_subnet(mock_query_google(), Some([8, 8, 8])).unwrap();
+    let (_, qname_end) = parse_domain(&query, 12).unwrap();
+    let response = craft_redirect_response(&query, qname_end, vec!["8.8.4.4"]).unwrap();
+
+    assert_eq!(
+        parse_a_records(&response),
+        ["8.8.4.4".parse::<std::net::Ipv4Addr>().unwrap()]
     );
 }
 
