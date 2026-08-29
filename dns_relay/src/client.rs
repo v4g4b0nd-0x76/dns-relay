@@ -8,7 +8,7 @@ use crate::{
     dns::{Ipv4Subnet, build_lookup_query, parse_a_records, set_ecs_ipv4_subnet, with_txid},
     handler::{Flight, InFlightQueries},
     relay::RelayPicker,
-    resolver::{DoqPool, ResolverPicker, UdpDispatcher, is_secure_resolver},
+    resolver::{DoqPool, ResolverPicker, UdpDispatcher, is_secure_resolver, is_usable_response},
 };
 use shared::build_http_client;
 use std::{
@@ -98,9 +98,9 @@ impl DnsResolver {
                 )
                 .await?,
             ),
-            Some(relay) => Some(
-                RelayPicker::new(&relay, &picker, &http, &doq_pool, &udp_dispatcher).await?,
-            ),
+            Some(relay) => {
+                Some(RelayPicker::new(&relay, &picker, &http, &doq_pool, &udp_dispatcher).await?)
+            }
             None => None,
         };
 
@@ -190,12 +190,19 @@ pub(crate) async fn resolve_transport(
     if let Some(relay_picker) = relay_picker {
         let payload = set_ecs_ipv4_subnet(payload, effective_subnet)
             .ok_or_else(|| Error::Other("failed to add ECS to relay query".into()))?;
-        tokio::time::timeout(
+        let reply = tokio::time::timeout(
             relay_picker.timeout_duration(),
             relay_picker.pick().resolve(domain, &payload),
         )
         .await
-        .map_err(|_| Error::ResolveTimeout)?
+        .map_err(|_| Error::ResolveTimeout)??;
+        if is_usable_response(&reply, picker.secure_only()) {
+            Ok(reply)
+        } else {
+            Err(Error::Other(
+                "relay returned an unusable DNS response".into(),
+            ))
+        }
     } else {
         picker
             .resolve_packet_for_subnet(
@@ -213,9 +220,13 @@ pub(crate) async fn resolve_transport(
 #[cfg(test)]
 mod tests {
     use super::{DnsResolver, ResolverConfig, resolve_transport};
+    use crate::cache::new_cache;
     use crate::conf::{Relay, RelayConf, RelayTransport};
-    use crate::dns::{craft_redirect_response, parse_a_records, parse_domain};
+    use crate::dns::{build_lookup_query, craft_redirect_response, parse_a_records, parse_domain};
+    use crate::handler::InFlightQueries;
+    use crate::relay::{RelayInstance, RelayPicker, encode_for_relay};
     use crate::resolver::{DoqPool, UdpDispatcher};
+    use aes_gcm::{Aes256Gcm, KeyInit, aead::OsRng};
     use std::{
         net::{Ipv4Addr, SocketAddr},
         sync::{
@@ -223,7 +234,12 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
         },
     };
-    use tokio::{net::UdpSocket, sync::Barrier, task::JoinHandle};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, UdpSocket},
+        sync::Barrier,
+        task::JoinHandle,
+    };
 
     async fn mock_udp_resolver(ip: Ipv4Addr) -> (SocketAddr, Arc<AtomicUsize>, JoinHandle<()>) {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -294,12 +310,8 @@ mod tests {
             let (length, peer) = upstream.recv_from(&mut query).await.unwrap();
             assert!(query[..length].ends_with(&[8, 8, 8]));
             let (_, qname_end) = parse_domain(&query[..length], 12).unwrap();
-            let response = craft_redirect_response(
-                &query[..length],
-                qname_end,
-                vec!["8.8.4.4"],
-            )
-            .unwrap();
+            let response =
+                craft_redirect_response(&query[..length], qname_end, vec!["8.8.4.4"]).unwrap();
             upstream.send_to(&response, peer).await.unwrap();
         });
         let picker = crate::resolver::ResolverPicker::from_healthy(vec![(
@@ -324,6 +336,44 @@ mod tests {
         .unwrap();
 
         assert_eq!(parse_a_records(&response), [Ipv4Addr::new(8, 8, 4, 4)]);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn secure_relay_zero_only_response_is_not_cached() {
+        let key = Aes256Gcm::generate_key(OsRng);
+        let query = build_lookup_query("example.test");
+        let (_, qname_end) = parse_domain(&query, 12).unwrap();
+        let zero = craft_redirect_response(&query, qname_end, vec!["0.0.0.0"]).unwrap();
+        let encrypted = encode_for_relay(&key, &zero);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                encrypted.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(&encrypted).await.unwrap();
+        });
+        let cache = Arc::new(new_cache());
+        let resolver = DnsResolver {
+            http: reqwest::Client::new(),
+            picker: crate::resolver::ResolverPicker::from_healthy_secure(Vec::new()),
+            relay_picker: Some(RelayPicker::from_instances(vec![RelayInstance::for_test(
+                &url, key,
+            )])),
+            doq_pool: Arc::new(DoqPool::new()),
+            udp_dispatcher: Arc::new(UdpDispatcher::new().unwrap()),
+            cache: Arc::clone(&cache),
+            in_flight: Arc::new(InFlightQueries::new()),
+        };
+
+        assert!(resolver.resolve_ipv4("example.test").await.is_err());
+        assert!(cache.lock().unwrap().is_empty());
         server.await.unwrap();
     }
 

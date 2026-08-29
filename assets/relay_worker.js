@@ -157,7 +157,55 @@ function isCacheableReply(packet) {
   const isResponse = (flags & 0x8000) !== 0;
   const isTruncated = (flags & 0x0200) !== 0;
   const rcode = flags & 0x000f;
-  return isResponse && !isTruncated && rcode !== 2; // SERVFAIL is transient.
+  return (
+    isResponse &&
+    !isTruncated &&
+    rcode !== 2 && // SERVFAIL is transient.
+    !hasOnlyUnspecifiedAddresses(packet)
+  );
+}
+
+function skipDnsName(packet, offset) {
+  while (offset < packet.length) {
+    const length = packet[offset];
+    if (length === 0) return offset + 1;
+    if ((length & 0xc0) === 0xc0)
+      return offset + 2 <= packet.length ? offset + 2 : null;
+    if ((length & 0xc0) !== 0 || offset + 1 + length > packet.length)
+      return null;
+    offset += 1 + length;
+  }
+  return null;
+}
+
+export function hasOnlyUnspecifiedAddresses(packet) {
+  if (!packet || packet.length < 12) return false;
+  const questionCount = (packet[4] << 8) | packet[5];
+  const answerCount = (packet[6] << 8) | packet[7];
+  let offset = 12;
+
+  for (let i = 0; i < questionCount; i++) {
+    const nameEnd = skipDnsName(packet, offset);
+    if (nameEnd === null || nameEnd + 4 > packet.length) return false;
+    offset = nameEnd + 4;
+  }
+
+  let addressCount = 0;
+  for (let i = 0; i < answerCount; i++) {
+    const nameEnd = skipDnsName(packet, offset);
+    if (nameEnd === null || nameEnd + 10 > packet.length) return false;
+    const type = (packet[nameEnd] << 8) | packet[nameEnd + 1];
+    const length = (packet[nameEnd + 8] << 8) | packet[nameEnd + 9];
+    const dataStart = nameEnd + 10;
+    offset = dataStart + length;
+    if (offset > packet.length) return false;
+    if ((type === 1 && length === 4) || (type === 28 && length === 16)) {
+      addressCount++;
+      if (packet.slice(dataStart, offset).some((byte) => byte !== 0))
+        return false;
+    }
+  }
+  return addressCount > 0;
 }
 
 async function cacheRequestFor(query, relayKey) {

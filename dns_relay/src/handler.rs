@@ -13,8 +13,8 @@ use std::{
 
 use crate::{
     cache::{
-        CacheKey, ResponseCache, cache_key_from_query_for_subnet, cache_lookup,
-        cache_lookup_stale, cache_store,
+        CacheKey, ResponseCache, cache_key_from_query_for_subnet, cache_lookup, cache_lookup_stale,
+        cache_store,
     },
     client::resolve_transport,
     conf::RecordHisotryConf,
