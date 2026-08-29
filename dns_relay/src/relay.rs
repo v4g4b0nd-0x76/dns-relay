@@ -119,8 +119,8 @@ pub(crate) async fn discover_client_subnet(
     client: &reqwest::Client,
     relay_url: &str,
 ) -> Result<Ipv4Subnet, Error> {
-    let mut url = Url::parse(relay_url)
-        .map_err(|err| Error::Config(format!("invalid relay URL: {err}")))?;
+    let mut url =
+        Url::parse(relay_url).map_err(|err| Error::Config(format!("invalid relay URL: {err}")))?;
     url.query_pairs_mut().append_pair("subnet", "1");
     let response = client
         .get(url)
@@ -138,9 +138,7 @@ pub(crate) async fn discover_client_subnet(
         .await
         .map_err(|err| Error::Config(format!("invalid subnet discovery body: {err}")))?;
     if body.len() > 32 {
-        return Err(Error::Config(
-            "subnet discovery body is too large".into(),
-        ));
+        return Err(Error::Config("subnet discovery body is too large".into()));
     }
     let body = std::str::from_utf8(&body)
         .map_err(|_| Error::Config("subnet discovery returned invalid text".into()))?;
@@ -507,7 +505,7 @@ impl RelayPicker {
         Self {
             instances,
             last_idx: AtomicUsize::new(0),
-            timeout_duration: Duration::from_secs(0),
+            timeout_duration: Duration::from_secs(1),
             configured_subnet: None,
             discovered_subnet: Arc::new(RwLock::new(None)),
         }
@@ -605,11 +603,7 @@ mod tests {
         assert!(cache.lock().unwrap().is_empty());
 
         cache_store(&cache, key, &answer);
-        assert!(!replace_discovered_subnet(
-            &state,
-            &cache,
-            Some([8, 8, 8])
-        ));
+        assert!(!replace_discovered_subnet(&state, &cache, Some([8, 8, 8])));
         assert!(!cache.lock().unwrap().is_empty());
     }
 }

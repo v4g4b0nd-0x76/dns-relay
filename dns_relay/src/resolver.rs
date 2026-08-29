@@ -25,7 +25,7 @@ use crate::{
     constants::{SEARCH_RESOLVER_INTERVAL, UDP_PROBE_TIMEOUT},
     dns::{
         Ipv4Subnet, build_lookup_query, parse_a_records, public_ipv4_subnet,
-        set_ecs_ipv4_subnet,
+        response_has_only_unspecified_addresses, set_ecs_ipv4_subnet,
     },
     errors::{DohError, Error},
 };
@@ -360,6 +360,10 @@ impl ResolverPicker {
         resolvers
     }
 
+    pub(crate) fn secure_only(&self) -> bool {
+        self.secure_only
+    }
+
     pub async fn resolve_packet(
         &self,
         payload: &[u8],
@@ -402,6 +406,7 @@ impl ResolverPicker {
                 http,
                 doq_pool,
                 udp_dispatcher,
+                self.secure_only,
             ),
         )
         .await
@@ -454,6 +459,7 @@ async fn resolve_candidates(
     http: &reqwest::Client,
     doq_pool: &DoqPool,
     udp_dispatcher: &UdpDispatcher,
+    reject_unspecified: bool,
 ) -> Result<Vec<u8>, Error> {
     let mut primary_query = Box::pin(resolve_candidate(
         payload,
@@ -462,6 +468,7 @@ async fn resolve_candidates(
         http,
         doq_pool,
         udp_dispatcher,
+        reject_unspecified,
     ));
     let Some(secondary) = secondary else {
         return primary_query.await;
@@ -478,6 +485,7 @@ async fn resolve_candidates(
                 http,
                 doq_pool,
                 udp_dispatcher,
+                reject_unspecified,
             ).await,
         },
         _ = &mut hedge => {
@@ -488,6 +496,7 @@ async fn resolve_candidates(
                 http,
                 doq_pool,
                 udp_dispatcher,
+                reject_unspecified,
             ));
             tokio::select! {
                 primary_result = &mut primary_query => match primary_result {
@@ -510,6 +519,7 @@ async fn resolve_candidate(
     http: &reqwest::Client,
     doq_pool: &DoqPool,
     udp_dispatcher: &UdpDispatcher,
+    reject_unspecified: bool,
 ) -> Result<Vec<u8>, Error> {
     let (packet, _) = resolve_from_upstream_inner(
         payload,
@@ -520,7 +530,7 @@ async fn resolve_candidate(
         Some(udp_dispatcher),
     )
     .await?;
-    if is_usable_response(&packet) {
+    if is_usable_response(&packet, reject_unspecified) {
         Ok(packet)
     } else {
         Err(Error::Other(format!(
@@ -529,13 +539,17 @@ async fn resolve_candidate(
     }
 }
 
-fn is_usable_response(packet: &[u8]) -> bool {
+pub(crate) fn is_usable_response(packet: &[u8], reject_unspecified: bool) -> bool {
     if packet.len() < 12 {
         return false;
     }
     let flags = u16::from_be_bytes([packet[2], packet[3]]);
     let rcode = flags & 0x000F;
-    flags & 0x8000 != 0 && flags & 0x0200 == 0 && rcode != 2 && rcode != 5
+    flags & 0x8000 != 0
+        && flags & 0x0200 == 0
+        && rcode != 2
+        && rcode != 5
+        && (!reject_unspecified || !response_has_only_unspecified_addresses(packet))
 }
 
 #[inline(always)]
@@ -1398,6 +1412,34 @@ mod tests {
         primary_task.abort();
         let _ = primary_task.await;
         secondary_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn zero_only_primary_uses_authenticated_secondary() {
+        let zero = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let valid = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let primary = (zero.local_addr().unwrap().to_string(), Duration::ZERO);
+        let secondary = (valid.local_addr().unwrap().to_string(), Duration::ZERO);
+        let zero_task = tokio::spawn(answer_with_ip(zero, "0.0.0.0", Duration::ZERO));
+        let valid_task = tokio::spawn(answer_with_ip(valid, "8.8.8.8", Duration::ZERO));
+        let query = build_lookup_query("example.test");
+
+        let response = resolve_candidates(
+            &query,
+            None,
+            &primary,
+            Some(&secondary),
+            &reqwest::Client::new(),
+            &DoqPool::new(),
+            &UdpDispatcher::new().unwrap(),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(parse_a_records(&response), [Ipv4Addr::new(8, 8, 8, 8)]);
+        zero_task.await.unwrap();
+        valid_task.await.unwrap();
     }
 
     #[tokio::test]

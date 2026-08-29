@@ -763,11 +763,8 @@ fn relay_picker_effective_subnet_uses_approved_priority() {
         "https://only.example.workers.dev",
         test_key(),
     )];
-    let configured = RelayPicker::from_instances_with_subnets(
-        instances,
-        Some([9, 9, 9]),
-        Some([1, 1, 1]),
-    );
+    let configured =
+        RelayPicker::from_instances_with_subnets(instances, Some([9, 9, 9]), Some([1, 1, 1]));
     assert_eq!(
         configured.effective_subnet("8.8.4.4:53000".parse().unwrap()),
         Some([9, 9, 9])
