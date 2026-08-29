@@ -1,135 +1,166 @@
 # resolver_proxy
 
-A tiny local bind that sits between your OS (or LAN) and the [`dns_relay`](../dns_relay/README.md) resolver you've deployed on a machine outside your network's filtering. It exists for one job: get a DNS query out to your resolver without a DPI box on the path being able to recognize it as DNS, rewrite it, or drop it.
+`resolver_proxy` is a small local DNS forwarder for reaching a remote
+[`dns_relay`](../dns_relay/README.md) instance across a network that inspects,
+rewrites, or drops plaintext DNS.
 
-You point your system's DNS at `resolver_proxy` (typically `127.0.0.1`) the same way you'd point it at any local resolver. `resolver_proxy` then re-packages each query using whichever **transport mode** you've configured, sends it to your `dns_relay` instance, and unwraps the reply the same way before handing it back.
+Clients send ordinary UDP DNS queries to the proxy. It applies local drop and
+redirect rules, checks its cache, and tries configured upstream targets until
+one replies. The response is decoded when necessary and returned to the client
+with the original DNS transaction ID.
 
-## Why this exists
+## Transport Modes
 
-Some networks don't just block specific domains at the DNS layer — they run DPI boxes that watch outbound UDP/53 traffic and inject forged responses for domains on a blocklist (see the root project README for how this looks in practice). Pointing your OS at a resolver outside the country doesn't help if the query itself is still recognizable plaintext DNS crossing the border — the DPI box forges the answer regardless of which IP you asked. `resolver_proxy` addresses this by changing _what the query looks like on the wire_, not just where it's sent.
+The current binary supports exactly two UDP target modes:
 
-## Transport modes
+- `plain`: sends the original DNS packet over UDP. This is useful for testing
+  or unfiltered networks, but does not prevent DNS inspection or injection.
+- `udp_obfs`: sends a ChaCha20-Poly1305 authenticated packet with a fresh nonce
+  and random encrypted padding. A matching `dns_relay` `obfs_conf` listener
+  decrypts the query and encrypts the response.
 
-`resolver_proxy` supports three modes per upstream target. You choose per-instance, and can run several instances side by side (e.g. a primary obfuscated transport with a plain fallback for use on unfiltered networks).
+The authenticated wire format is:
 
-### 1. `plain`
-
-Forwards the query exactly as received — a normal DNS packet, sent as-is over UDP (or TCP, if configured) to the target. No obfuscation, no extra encryption beyond what the target itself provides.
-
-Use this when:
-
-- You're testing the pipeline end-to-end before adding obfuscation.
-- You're on a network that doesn't do DNS injection/tampering, and you just want the drop/redirect/cache behavior of `dns_relay` without extra overhead.
-- Your target is already something that handles its own transport security (e.g. you're pointing `plain` mode at a DoH URL, in which case the "plain" query rides inside the HTTPS request the same as it always would).
-
-`plain` is the mode with no protection against DPI injection — if the network path forges responses to raw UDP/53, `plain` mode won't stop that. It's a baseline/fallback, not a circumvention mode.
-
-### 2. `udp_obfs`
-
-Wraps the DNS query as an encrypted, padded UDP datagram with no recognizable header or fixed size — the goal is that a DPI box sees an opaque blob it can't identify as DNS, rather than a smaller/cleverly-shaped DNS packet it can still parse.
-
-Wire format, all of it inside one UDP datagram:
-
-```
-[ 12-byte random nonce ][ AEAD ciphertext of: 2-byte length prefix || real DNS query || random padding ]
+```text
+[12-byte nonce][ciphertext: 2-byte DNS length | DNS packet | random padding][16-byte tag]
 ```
 
-- Encryption is ChaCha20-Poly1305 with a key shared out-of-band between `resolver_proxy` and `dns_relay`.
-  **Note:** you can generate the key using the command below:
+Invalid or unauthenticated packets receive no response from `dns_relay`.
+`resolver_proxy` does not currently implement TCP or TLS transport.
+
+Targets may use `ip:port` or `host:port`; hostnames are resolved once at proxy
+startup with the operating system resolver.
+
+## Target Selection
+
+- `ordered` tries targets in config order on every request.
+- `round_robin` rotates the first target for each request, then uses the other
+  targets as a fallback chain.
+
+Each attempt must time out before failover continues. The config field
+`upstream_timeout_ms` is accepted, but the current forwarding path uses the
+built-in resolver timeout rather than this value. There is no active target
+health-check setting in the current config format.
+
+## Rules And Cache
+
+Rules use the same format as `dns_relay`: suffix wildcards such as
+`*.example.com`, label globs such as `ad-*.example.com`, external blocklist
+files, and inline `domain:ip1,ip2` redirects. External file loading currently
+applies only to `drop_list`.
+
+The proxy caches successful forwarded replies. Config and referenced rule files
+can be hot-reloaded; invalid replacement config is logged and the last valid
+config remains active.
+
+## Build And Run
 
 ```bash
-./resolver_proxy gen-obfs-key
-# Result seem like: NeXA6IOiBtSewKagv9GRhB/PKOUae3svFVuY1Ok3DTE=
+cargo build --release -p resolver_proxy
+cargo test -p resolver_proxy
+./target/release/resolver_proxy --conf /path/to/conf.toml check-conf
+./target/release/resolver_proxy --conf /path/to/conf.toml run
 ```
 
-- The plaintext that gets encrypted is a 2-byte big-endian length prefix, the actual DNS query bytes, and then random padding out to a randomized total size — padding is _inside_ the AEAD envelope, not appended after it, so the ciphertext's own length doesn't leak the real query's length to an observer doing size-based traffic analysis.
-- `dns_relay` decrypts the datagram, reads the length prefix, keeps exactly that many bytes as the real query, and discards the rest as padding.
-- Every packet gets a fresh nonce and a randomized padding bucket, so there's no fixed packet size or repeating byte pattern for DPI to key on.
-- If decryption/tag verification fails (garbage, replay, active probing), `dns_relay` drops the packet silently — it never sends an error back to an unauthenticated sender, so a probing scanner gets nothing to fingerprint.
+The default config path is `./conf.toml`. Binding port 53 normally requires
+root or this Linux capability:
 
-Use this when:
+```bash
+sudo setcap cap_net_bind_service=+ep /path/to/resolver_proxy
+```
 
-- Your network blocks or tampers with plaintext UDP/53 specifically, but doesn't do deep statistical fingerprinting of arbitrary UDP traffic.
-- You want the lowest-latency option that still evades content-based DNS injection (no TLS handshake overhead).
+## CLI
 
-Trade-off: a UDP blob to a non-standard port can itself look unusual on networks that whitelist known protocols rather than blocklist known-bad ones. If that's your situation, prefer `tls`.
+```text
+resolver_proxy [--conf PATH] [run]
+resolver_proxy [--conf PATH] check-conf
+resolver_proxy [--conf PATH] list-rules
+resolver_proxy [--conf PATH] gen-obfs-key
+resolver_proxy [--conf PATH] gen-relay-key
+```
 
-### 3. `tls(Not Implemented Yet)`
+With no subcommand, the proxy runs in the foreground. `gen-obfs-key` prints a
+base64 key for a paired `udp_obfs` target and listener. `gen-relay-key` prints
+the AES-256-GCM key format used by the separate HTTPS relay feature.
 
-Wraps the same encrypted payload described above inside an actual TLS connection to the target, so what crosses the network is a real TLS handshake followed by an encrypted stream — indistinguishable at the protocol level from any other HTTPS-like traffic to that IP or domain.
+## Complete Config
 
-- The inner payload (nonce + AEAD ciphertext + padding) is unchanged from `udp_obfs` — `tls` mode is the same framing, just carried over a TLS byte stream instead of a raw UDP datagram, giving you an additional layer of cover (a recognizable TLS ClientHello/handshake instead of a UDP packet).
-- Supports connecting by **domain name** (SNI-based, so it looks like a normal TLS connection to that hostname) or by **raw `ip:port`** (no SNI, or a decoy SNI — see `sni_override` below).
-- Because it's a real TLS session, this is the mode least likely to be blocked by protocol-allowlisting DPI, at the cost of the extra handshake round-trip on a fresh connection (subsequent queries on an already-open connection don't pay this cost again — `resolver_proxy` keeps the TLS session alive and reuses it).
-
-Use this when:
-
-- `udp_obfs` traffic gets blocked or throttled on your network (e.g. UDP to non-standard ports is itself suspicious).
-- You want your traffic to blend in as ordinary HTTPS to a specific domain.
-
-## Configuring a target: `ip:port` or domain
-
-Each upstream target in `resolver_proxy`'s config can be given as either a bare `ip:port` or a domain name — which one you use interacts with the transport mode:
-
-- **`plain` / `udp_obfs`**: target is almost always `ip:port`, since there's no TLS handshake to justify a hostname. A domain is still accepted and resolved once at startup (using the resolvers you already trust), but it adds no obfuscation benefit in these two modes.
-- **`tls`**: target is usually a **domain**, so the TLS handshake's SNI is a real, resolvable hostname pointing at your `dns_relay` box — this is what makes the connection look like an ordinary HTTPS visit to that domain rather than a bare-IP TLS connection (which is itself a mild anomaly signal on some networks). You can still target a bare `ip:port` in `tls` mode; in that case either omit SNI entirely or set `sni_override` to a plausible unrelated hostname sharing that IP (only meaningful if your TLS termination in front of `dns_relay` is actually configured to answer for that name).
-
-## Config format
+This example contains every current config section and passes `check-conf` as
+written.
 
 ```toml
-dns_target = "127.0.0.1:5353"
+# Used only by VPN DNS reassertion. The proxy listener is targets.listen_addr.
+dns_target = "127.0.0.1:53"
 vpn_reassertion = false
 
 drop_list = [
-    "*.example.com",
-    "x.com",
-    "*.x.com",
-    # "*.linkedin.com",
-    # "linkedin.com",
-    "ads.youtube.com",
-    "./assets/google_ads_list.txt",
+    "ads.example.com",
+    "*.tracking.example",
+    "./blocklist.txt",
 ]
-redirect_list = []
+
+redirect_list = [
+    "internal.example:192.0.2.10",
+    "multi.example:192.0.2.11,192.0.2.12",
+]
+
+[hotreload_conf]
+enable = true
+poll_interval_ms = 1000
+
+[metric_conf]
+enable = false
+report_type = "log" # "log" or "http"
+report_interval = 30
 
 [targets]
 listen_addr = "127.0.0.1:53"
-strategy = "ordered"
+strategy = "ordered" # "ordered" or "round_robin"
 upstream_timeout_ms = 2000
 
 [[targets.targets]]
-name = "primary_obfs"
+name = "remote_obfs"
 mode = "udp_obfs"
-address = "127.0.0.1:8853"
-shared_key = "x6M+T32EXh5/sxGKQiYaApeXm2xd2ZT3YE8/SWhYVpE="
+address = "resolver.example.com:8853"
+shared_key = "<base64 key from resolver_proxy gen-obfs-key>"
 
 [[targets.targets]]
-name = "unfiltered_fallback"
+name = "plain_fallback"
 mode = "plain"
-address = "127.0.0.1:53"
+address = "192.0.2.53:53"
 ```
 
-`resolver_proxy` tries targets in order (or round-robins, depending on your `strategy` setting — see below), so a typical setup is one `udp_obfs` or `tls` target as primary with a `plain` target as a last-resort fallback for networks where obfuscation isn't needed or is itself failing.
+`drop_list`, `redirect_list`, `hotreload_conf`, `metric_conf`,
+`vpn_reassertion`, and `dns_target` may be omitted. `dns_target` defaults to
+`127.0.0.1:53`; it does not change the proxy listener. `targets` and at least
+one `targets.targets` item are required at runtime. `strategy` defaults to
+`ordered`, and `upstream_timeout_ms` defaults to 2000 when omitted.
+
+`shared_key` is required for `udp_obfs` and ignored for `plain`. Replace the
+placeholder before running the proxy. The matching remote `dns_relay` config is:
 
 ```toml
-strategy = "ordered"   # "ordered" (try in list order, fail over) or "round_robin"
-health_check_interval = 30   # seconds; unhealthy targets are skipped until they recover
+[obfs_conf]
+enable = true
+bind_addr = "0.0.0.0:8853"
+keys = ["<the same base64 key>"]
 ```
 
-## How a query flows end to end
+`report_type = "log"` emits counters when traffic changes.
+`report_type = "http"` serves JSON metrics at
+`http://127.0.0.1:5053/metrics` and health at
+`http://127.0.0.1:5053/health`. Only one local process can own that fixed port.
 
-1. Your OS sends a normal DNS query to `resolver_proxy` on `127.0.0.1:53`.
-2. `resolver_proxy` picks a target per `strategy`, encodes the query according to that target's `mode`, and sends it out (UDP datagram, or over an open/newly-opened TLS connection).
-3. `dns_relay`, listening on the other end, decodes the packet back into a plain DNS query, runs it through its normal drop-list / redirect-list / cache / upstream-resolver pipeline exactly as it would for a directly-received query.
-4. `dns_relay` encodes the answer the same way (fresh nonce, fresh padding) and sends it back.
-5. `resolver_proxy` decodes the reply and returns it to your OS with the original transaction ID.
+`vpn_reassertion = true` starts the shared network guard and points system DNS
+at `dns_target`. This requires permission for macOS `networksetup`/`scutil` or
+Linux `resolvectl`/`/etc/resolv.conf` updates.
 
-## Deployment notes
+## Deployment
 
-- `resolver_proxy` runs on the machine on the filtered network (your laptop, a home router, etc.) and needs no elevated privileges beyond binding to local port 53 the same way `dns_relay` does (`setcap`/`sudo`, see the main resolver's README).
-- `dns_relay` runs on the machine outside the filtering, listening for whichever transport modes you've enabled — it must have a corresponding listener configured for each mode/target you point `resolver_proxy` at.
-- Rotate `shared_key` values periodically, and treat any target whose address becomes publicly associated with this use as burned — move it to a new IP/domain rather than trying to keep using a known one.
+Run `resolver_proxy` on the filtered network and `dns_relay` on a reachable
+remote machine. Point the operating system or LAN DNS setting at
+`targets.listen_addr`. For `udp_obfs`, expose the remote `obfs_conf.bind_addr`
+UDP port and keep the shared key private.
 
-### Notes
-
-- Tested manually against the paired `dns_relay` instance; exact flag/config field names may vary slightly by build — check `--help` and the shared lib's config struct for the authoritative list.
-- Bug reports and feature suggestions are welcome.
+Linux and macOS are manually tested. Windows builds are released, but port 53
+requires an elevated terminal.

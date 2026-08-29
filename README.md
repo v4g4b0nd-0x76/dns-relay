@@ -1,76 +1,102 @@
-# dns-relay
+# DNS Relay
 
-This project is made of three components:
+Rust workspace for a configurable DNS resolver and its local anti-DPI proxy.
+The current workspace version is **1.6.10** and requires Rust 1.85 or newer.
 
-- [The main resolver](./dns_relay/README.md)
-- [The proxy resolver](./resolver_proxy/README.md)
-- Shared lib
+## Components
 
-**The main resolver** is what you send your DNS queries to; it resolves them using your chosen upstream resolver(s), with support for drop lists, redirect lists, and caching.
+| Component | Role | Documentation |
+| --- | --- | --- |
+| `dns_relay` | Main DNS server and reusable resolver library | [dns_relay/README.md](dns_relay/README.md) |
+| `resolver_proxy` | Local UDP forwarder with optional authenticated obfuscation | [resolver_proxy/README.md](resolver_proxy/README.md) |
+| `dns-relay-shared` | Shared DNS, cache, metrics, rules, network guard, and obfuscation code | Internal workspace crate |
 
-**The proxy resolver** exists to bypass DPI DNS boxes that return whatever address they want for filtered domains. You deploy it on your own machine, point your DNS queries at it, and it builds an obfuscated UDP or TCP packet (depending on your configured transport) and sends it to your `dns_relay` instance. `dns_relay` decodes the packet, resolves the real address, encodes the answer the same way, and sends it back to you.
+The normal two-machine deployment is:
 
-### Notes
-
-- Tested manually on both Linux and macOS; no guarantee everything works identically on every setup.
-- Bug reports and feature suggestions are welcome.
-
-### Make file usages
-
-```bash
-# --- dns_relay (default bin, no need to pass bin=) ---
-
-make build                     # auto-detect host target, build dns_relay
-make build-gnu                 # x86_64-unknown-linux-gnu, dns_relay
-make build-musl                # static musl build, dns_relay
-make build-mac                 # aarch64-apple-darwin, dns_relay
-./scripts/build.sh windows dns_relay # x86_64-pc-windows-msvc, dns_relay.exe
-make test                       # cargo test --bin dns_relay
-make run                        # build then run dns_relay
-make caps                       # setcap on dns_relay binary
-
-
-# --- resolver_proxy (explicit bin=) ---
-
-make build bin=resolver_proxy
-make build-gnu bin=resolver_proxy
-make build-musl bin=resolver_proxy
-make build-mac bin=resolver_proxy
-make test bin=resolver_proxy
-make run bin=resolver_proxy
-make caps bin=resolver_proxy
-
-
-# --- direct script usage (bypassing make) ---
-
-./scripts/build.sh auto dns_relay
-./scripts/build.sh gnu resolver_proxy
-./scripts/build.sh musl resolver_proxy
-./scripts/build.sh mac resolver_proxy
-./scripts/build.sh windows resolver_proxy # x86_64-pc-windows-msvc, resolver_proxy.exe
-./scripts/build.sh all resolver_proxy   # attempt every target for resolver_proxy
-
-
-# --- version bump / release (unaffected by bin=, these are workspace-wide) ---
-
-make patch                      # bump patch version, commit + tag locally
-make minor
-make major
-make patch PUSH=1               # bump + push commit and tag to origin
-
+```text
+OS or LAN -> resolver_proxy -> plain UDP or encrypted udp_obfs -> dns_relay -> UDP / DoH / DoQ / HTTPS relay
 ```
 
-### Publishing the crates
+`resolver_proxy` is optional. Clients can query `dns_relay` directly when the
+network path does not inspect or forge DNS traffic.
 
-Create a crates.io API token with publish permission and save it in the GitHub
-repository as the Actions secret `CARGO_REGISTRY_TOKEN`. The next
-`PUSH=1 make patch` tag runs both the binary release workflow and the crate
-publication workflow; `dns-relay-shared` is published before `dns_relay`.
+## Current Features
 
-### Windows releases
+- Domain drop and redirect rules, including suffix wildcards and label globs, plus external drop-list files.
+- In-memory LRU response caching and sharing of concurrent identical lookups.
+- Plain UDP, DNS-over-HTTPS (DoH), and DNS-over-QUIC (DoQ) upstreams.
+- Fail-closed `secure_only` mode that excludes UDP upstreams and rejects zero-address sinkholes.
+- AES-256-GCM HTTPS relays through Cloudflare Workers, directly or through Google Apps Script.
+- ChaCha20-Poly1305 padded UDP transport between `resolver_proxy` and `dns_relay`.
+- Ordered failover or round-robin proxy target selection.
+- Config and rule-list hot reload, metrics, optional query history, and VPN DNS reassertion.
+- Linux, macOS, and Windows release builds; background mode is available on Linux and macOS.
+- Reusable `dns_relay::DnsResolver` Rust API.
 
-The Windows release ZIP for the main resolver contains `dns_relay.exe`; the
-proxy release ZIP contains `resolver_proxy.exe`. Open PowerShell or Command
-Prompt **as Administrator** before running either program when it is configured
-to listen on DNS port 53, since Windows reserves that privileged port for
-elevated processes.
+The proxy does **not** currently implement TLS transport. Its supported target
+modes are exactly `plain` and `udp_obfs`.
+
+## Build And Test
+
+```bash
+cargo build --workspace
+cargo test --workspace
+node assets/relay_worker_test.mjs
+```
+
+Build one release binary with Make:
+
+```bash
+make build                         # dns_relay for the host
+make build bin=resolver_proxy      # resolver_proxy for the host
+make build-musl                    # static Linux dns_relay
+make build-musl bin=resolver_proxy
+make build-gnu bin=resolver_proxy
+make build-mac bin=resolver_proxy
+./scripts/build.sh windows dns_relay
+./scripts/build.sh windows resolver_proxy
+```
+
+Run either binary with a config file:
+
+```bash
+dns_relay --conf /path/to/dns-relay.toml check-conf
+dns_relay --conf /path/to/dns-relay.toml run
+
+resolver_proxy --conf /path/to/resolver-proxy.toml check-conf
+resolver_proxy --conf /path/to/resolver-proxy.toml run
+```
+
+Binding port 53 normally requires root/Administrator privileges. On Linux,
+grant only the bind capability when full root access is unnecessary:
+
+```bash
+sudo setcap cap_net_bind_service=+ep /path/to/dns_relay
+sudo setcap cap_net_bind_service=+ep /path/to/resolver_proxy
+```
+
+See [assets/SERVICES.md](assets/SERVICES.md) for systemd and launchd setup.
+
+## Releases
+
+Workspace version bumps, commits, and tags are handled by Make:
+
+```bash
+make patch
+make minor
+make major
+make patch PUSH=1
+```
+
+`PUSH=1` pushes the release commit and tag. Tagged releases build both binaries;
+the crates.io workflow publishes `dns-relay-shared` before `dns_relay` and needs
+the `CARGO_REGISTRY_TOKEN` GitHub Actions secret.
+
+Windows release ZIPs contain `dns_relay.exe` or `resolver_proxy.exe`. Run them
+from an elevated PowerShell or Command Prompt when listening on port 53.
+
+## Platform Status
+
+Linux and macOS are manually tested. Windows binaries are produced by the
+release workflow, but privileged port binding and background service behavior
+differ by platform. Bug reports and feature suggestions are welcome.
