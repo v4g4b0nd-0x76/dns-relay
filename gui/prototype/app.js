@@ -73,7 +73,7 @@ function setDirty() {
   dirtyBar.hidden = false;
 }
 
-function render() {
+function render(resetScroll = false) {
   const header = document.querySelector("[data-header-state]");
   header.textContent = state.setupComplete ? titleCase(state.service) : "Setup";
   header.dataset.state = state.setupComplete ? state.service : "applying";
@@ -84,6 +84,7 @@ function render() {
     button.disabled = !state.setupComplete;
   });
   host.innerHTML = state.setupComplete ? renderView(state.activeView) : renderSetup();
+  if (resetScroll) host.scrollTop = 0;
   dirtyBar.hidden = !state.dirty || !state.setupComplete;
   window.lucide?.createIcons({ attrs: { "stroke-width": 1.8 } });
 }
@@ -220,7 +221,7 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const { action } = button.dataset;
-  if (action === "navigate") { state.activeView = button.dataset.target; render(); }
+  if (action === "navigate") { state.activeView = button.dataset.target; render(true); }
   if (action === "toggle-service") {
     const next = state.service === "running" ? "stopped" : "running";
     state.service = "applying"; render();
@@ -249,8 +250,8 @@ document.addEventListener("click", (event) => {
   if (action === "pause-activity") { state.activityPaused = !state.activityPaused; render(); }
   if (action === "clear-activity") { state.logs = []; render(); announce("Activity cleared"); }
   if (action === "fixture-state") { state.fixtureState = button.dataset.state; render(); }
-  if (action === "restart-setup") { state.setupComplete = false; state.dirty = false; render(); }
-  if (action === "complete-setup") { state.setupComplete = true; state.service = "running"; state.activeView = "dashboard"; render(); announce("DNS Relay installed and running"); }
+  if (action === "restart-setup") { state.setupComplete = false; state.dirty = false; render(true); }
+  if (action === "complete-setup") { state.setupComplete = true; state.service = "running"; state.activeView = "dashboard"; render(true); announce("DNS Relay installed and running"); }
 });
 
 document.addEventListener("change", (event) => {

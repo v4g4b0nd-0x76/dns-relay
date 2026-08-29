@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 
@@ -104,7 +105,11 @@ test("keyboard focus, reduced motion, and icon names remain accessible", async (
 });
 
 for (const width of [420, 1024]) {
-  test(`primary states render without overlap at ${width}px`, async ({ page }) => {
+  test(`primary states render without overlap at ${width}px`, async ({ page }, testInfo) => {
+    const screenshotDir = testInfo.config.updateSnapshots === "all"
+      ? "tests/screenshots"
+      : testInfo.outputPath("screenshots");
+    mkdirSync(screenshotDir, { recursive: true });
     await openPrototype(page, width);
     for (const view of views) {
       await page.locator(`[data-target='${view}']`).click();
@@ -120,7 +125,7 @@ for (const width of [420, 1024]) {
       );
       expect(overlaps).toEqual([]);
       await page.screenshot({
-        path: `tests/screenshots/prototype-${view}-${width}.png`,
+        path: `${screenshotDir}/prototype-${view}-${width}.png`,
         fullPage: true,
         animations: "disabled",
       });
@@ -128,7 +133,7 @@ for (const width of [420, 1024]) {
     await page.locator("[data-target='settings']").click();
     await page.getByRole("button", { name: "Restart setup" }).click();
     await page.screenshot({
-      path: `tests/screenshots/prototype-setup-${width}.png`,
+      path: `${screenshotDir}/prototype-setup-${width}.png`,
       fullPage: true,
       animations: "disabled",
     });

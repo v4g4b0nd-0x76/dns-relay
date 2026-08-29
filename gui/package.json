@@ -5,6 +5,7 @@
   "scripts": {
     "vendor": "node scripts/vendor-lucide.mjs",
     "prototype:test": "playwright test tests/prototype.spec.mjs",
+    "prototype:update-screenshots": "playwright test tests/prototype.spec.mjs --update-snapshots=all",
     "prototype:show": "playwright show-report"
   },
   "dependencies": {

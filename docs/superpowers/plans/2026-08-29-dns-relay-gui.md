@@ -129,14 +129,12 @@ npm run prototype:test
 Expected: FAIL because `prototype/index.html` and `[data-app-shell]` do not yet
 exist.
 
-- [ ] **Step 4: Create the app mark**
+- [ ] **Step 4: Add the Kuro Nezumi app mark**
 
-Use the imagegen skill to create `gui/prototype/assets/app-mark.png` from this
-prompt: "Minimal desktop app icon for DNS Relay: a frontal shield integrated
-with two linked network nodes and a power notch, flat geometric shapes,
-charcoal, teal, coral, and off-white, no text, no gradient, transparent
-background, centered, crisp and recognizable at 32 pixels, 1024 by 1024." Use
-the mark in the app header and setup view without placing it inside a card.
+Convert the Kuro Nezumi macOS Ghostty icon from
+`~/projects/kuro-nezumi/assets/icons/macos/ghostty.icns` to the committed
+1024px transparent `gui/prototype/assets/app-mark.png`. Use the mark in the app
+header and setup view without placing it inside a card.
 
 - [ ] **Step 5: Build the prototype shell and visual system**
 
@@ -146,15 +144,17 @@ and screen-reader live region. Define fixed CSS tokens:
 
 ```css
 :root {
-  --bg: #171918;
-  --surface: #222524;
-  --surface-raised: #2a2e2c;
-  --text: #f4f3ee;
-  --muted: #a8ada9;
-  --healthy: #38c6a3;
-  --danger: #f06f64;
-  --warning: #e7b84b;
-  --border: #3a403d;
+  --bg: #080808;
+  --bg-alt: #101010;
+  --surface: #171717;
+  --surface-raised: #202020;
+  --text: #d7d2c8;
+  --muted: #9a948a;
+  --signal: #b73535;
+  --healthy: #8a8f73;
+  --danger: #d94a4a;
+  --warning: #b8a781;
+  --border: #343434;
   --radius: 8px;
   --control: 44px;
 }
