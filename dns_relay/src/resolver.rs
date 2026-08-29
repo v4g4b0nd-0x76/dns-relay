@@ -451,6 +451,7 @@ fn hedge_delay(rtt: Duration) -> Duration {
         .clamp(Duration::from_millis(25), Duration::from_millis(250))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn resolve_candidates(
     payload: &[u8],
     effective_subnet: Option<Ipv4Subnet>,
@@ -1287,11 +1288,11 @@ mod tests {
         second_task.await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dispatcher_handles_512_concurrent_queries() {
         const QUERY_COUNT: usize = 512;
         let dispatcher = UdpDispatcher::new().unwrap();
-        let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream = bind_udp_socket("127.0.0.1:0").unwrap();
         let upstream_addr = upstream.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let mut buf = [0u8; 512];
