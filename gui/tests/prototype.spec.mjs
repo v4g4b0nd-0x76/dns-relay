@@ -122,6 +122,7 @@ for (const width of [420, 1024]) {
       await page.screenshot({
         path: `tests/screenshots/prototype-${view}-${width}.png`,
         fullPage: true,
+        animations: "disabled",
       });
     }
     await page.locator("[data-target='settings']").click();
@@ -129,6 +130,7 @@ for (const width of [420, 1024]) {
     await page.screenshot({
       path: `tests/screenshots/prototype-setup-${width}.png`,
       fullPage: true,
+      animations: "disabled",
     });
   });
 }
