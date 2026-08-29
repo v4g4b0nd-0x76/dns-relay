@@ -40,7 +40,7 @@
 - Produces: `pub fn cache_key_from_query_for_subnet(payload: &[u8], subnet: Option<Ipv4Subnet>) -> Option<CacheKey>`
 - Preserves: `set_ecs_option` and `cache_key_from_query_for_client` as compatibility wrappers.
 
-- [ ] **Step 1: Add failing public-subnet tests**
+- [x] **Step 1: Add failing public-subnet tests**
 
 Add imports for the new helpers in `shared/src/tests.rs`, then add:
 
@@ -65,7 +65,7 @@ fn effective_subnet_uses_override_global_client_then_discovery() {
 }
 ```
 
-- [ ] **Step 2: Run the subnet tests and confirm they fail**
+- [x] **Step 2: Run the subnet tests and confirm they fail**
 
 Run:
 
@@ -76,7 +76,7 @@ cargo test -p dns-relay-shared effective_subnet_uses_override_global_client_then
 
 Expected: compilation fails because the new functions do not exist.
 
-- [ ] **Step 3: Implement public `/24` parsing and selection**
+- [x] **Step 3: Implement public `/24` parsing and selection**
 
 In `shared/src/dns.rs`, add `Ipv4Subnet`, reject any prefix other than `/24`, require the last octet to be zero, and accept only globally routable IPv4. The private helper must reject `is_unspecified`, `is_private`, `is_loopback`, `is_link_local`, `is_broadcast`, `is_documentation`, and `is_multicast`, plus `0.0.0.0/8`, shared `100.64.0.0/10`, protocol-assignment `192.0.0.0/24`, benchmarking `198.18.0.0/15`, and reserved `240.0.0.0/4`.
 
@@ -94,7 +94,7 @@ pub fn effective_ipv4_subnet(
 }
 ```
 
-- [ ] **Step 4: Add failing ECS and cache-key tests using an explicit subnet**
+- [x] **Step 4: Add failing ECS and cache-key tests using an explicit subnet**
 
 Add:
 
@@ -115,19 +115,19 @@ fn explicit_subnet_drives_ecs_and_cache_scope() {
 }
 ```
 
-- [ ] **Step 5: Run the ECS/cache test and confirm it fails**
+- [x] **Step 5: Run the ECS/cache test and confirm it fails**
 
 Run: `cargo test -p dns-relay-shared explicit_subnet_drives_ecs_and_cache_scope`
 
 Expected: compilation fails because the explicit-subnet functions do not exist.
 
-- [ ] **Step 6: Refactor existing ECS and cache code around the explicit subnet**
+- [x] **Step 6: Refactor existing ECS and cache code around the explicit subnet**
 
 Move the OPT-record mutation body from `set_ecs_option` into `set_ecs_ipv4_subnet`. `None` returns the original query unchanged. Keep `set_ecs_option(payload, client_addr, fabricated)` as a wrapper that converts its existing inputs to an `Ipv4Subnet`, preserving current callers and tests.
 
 In `shared/src/cache.rs`, make `cache_key_from_query_for_subnet` construct `CacheKey`. Keep `cache_key_from_query_for_client` as a wrapper around `public_ipv4_subnet`, and keep `cache_key_from_query` passing `None`.
 
-- [ ] **Step 7: Add failing zero-only answer tests**
+- [x] **Step 7: Add failing zero-only answer tests**
 
 Use `craft_redirect_response` for A records and a small local helper that appends an AAAA answer. Add:
 
@@ -148,17 +148,17 @@ fn only_unspecified_addresses_are_unusable() {
 }
 ```
 
-- [ ] **Step 8: Run the zero-answer test and confirm it fails**
+- [x] **Step 8: Run the zero-answer test and confirm it fails**
 
 Run: `cargo test -p dns-relay-shared only_unspecified_addresses_are_unusable`
 
 Expected: compilation fails because `response_has_only_unspecified_addresses` does not exist.
 
-- [ ] **Step 9: Implement one bounded Answer-section scan**
+- [x] **Step 9: Implement one bounded Answer-section scan**
 
 Reuse `skip_name`. Walk only `ANCOUNT` records and track `(address_count, has_non_unspecified)`. Recognize A only when `RDLENGTH == 4` and AAAA only when `RDLENGTH == 16`. Return `true` only for `address_count > 0 && !has_non_unspecified`; malformed packets return `false` so existing structural validation remains authoritative.
 
-- [ ] **Step 10: Run shared tests and commit**
+- [x] **Step 10: Run shared tests and commit**
 
 Run:
 
@@ -196,7 +196,7 @@ git commit -m "feat: classify secure DNS answers and subnets"
 - Produces: `DnsResolver::new_secure(config: ResolverConfig, client_subnet: Option<Ipv4Subnet>) -> Result<DnsResolver, Error>` while retaining `DnsResolver::new(config)`.
 - Produces: `run_secure_resolver_finder(resolver_searching: ResolverSearchingConf, healthy_resolvers: Arc<RwLock<Vec<Resolver>>>, is_searching: Arc<AtomicBool>, udp_dispatcher: Arc<UdpDispatcher>) -> Result<(), Error>` while retaining the existing `run_resolver_finder` signature.
 
-- [ ] **Step 1: Add failing configuration tests**
+- [x] **Step 1: Add failing configuration tests**
 
 In `dns_relay/src/tests.rs`, add this helper, then write temporary TOML files and call `load_conf`:
 
@@ -227,7 +227,7 @@ fn secure_config_parses_manual_public_subnet() {
 
 Also cover an invalid manual subnet and an `http://` relay URL under secure mode.
 
-- [ ] **Step 2: Run configuration tests and confirm they fail**
+- [x] **Step 2: Run configuration tests and confirm they fail**
 
 Run:
 
@@ -238,7 +238,7 @@ cargo test -p dns_relay secure_config_parses_manual_public_subnet
 
 Expected: compilation fails because `Conf` has no security fields and `load_conf` performs no validation.
 
-- [ ] **Step 3: Implement config deserialization and validation**
+- [x] **Step 3: Implement config deserialization and validation**
 
 Add serde-defaulted fields without adding a nested config object:
 
@@ -255,7 +255,7 @@ After TOML parsing, validate:
 - every enabled secure-mode relay URL uses `https`;
 - invalid subnet strings return `Error::Config`.
 
-- [ ] **Step 4: Add failing resolver-filter tests**
+- [x] **Step 4: Add failing resolver-filter tests**
 
 In the resolver-local test module, add:
 
@@ -274,19 +274,19 @@ fn secure_candidates_exclude_udp_even_if_it_is_fastest() {
 }
 ```
 
-- [ ] **Step 5: Run the resolver-filter test and confirm it fails**
+- [x] **Step 5: Run the resolver-filter test and confirm it fails**
 
 Run: `cargo test -p dns_relay secure_candidates_exclude_udp_even_if_it_is_fastest`
 
 Expected: compilation fails because secure picker construction does not exist.
 
-- [ ] **Step 6: Add secure filtering at every resolver entrance**
+- [x] **Step 6: Add secure filtering at every resolver entrance**
 
 Add `secure_only: bool` to `ResolverPicker`. Keep `new` and `from_healthy` as compatibility wrappers with `false`; add `new_secure` and test-only `from_healthy_secure` with `true`. Filter candidates defensively in `candidates`, and filter before static health checks so UDP is never probed for eligibility.
 
 Keep `run_resolver_finder` unchanged as a compatibility wrapper. Add `run_secure_resolver_finder` that filters fetched candidates with `is_secure_resolver` before health checks and merging. Update `main.rs` to select secure constructors/functions when `conf.secure_only` is true.
 
-- [ ] **Step 7: Preserve the reusable resolver API while adding secure construction**
+- [x] **Step 7: Preserve the reusable resolver API while adding secure construction**
 
 Keep `ResolverConfig` unchanged. Implement:
 
@@ -305,7 +305,7 @@ pub async fn new_secure(
 
 The private `build` selects `ResolverPicker::new_secure` and rejects configurations with no authenticated path. Re-export `Ipv4Subnet` from `dns_relay::lib` so callers do not need to depend on `shared` directly.
 
-- [ ] **Step 8: Run focused and crate tests, then commit**
+- [x] **Step 8: Run focused and crate tests, then commit**
 
 Run:
 
@@ -345,7 +345,7 @@ git commit -m "feat: add fail-closed secure resolver mode"
 - Produces: `async fn discover_client_subnet(client: &reqwest::Client, relay_url: &str) -> Result<Ipv4Subnet, Error>`.
 - Changes internal resolution calls to accept `effective_subnet: Option<Ipv4Subnet>` instead of deriving ECS independently from `src_addr`.
 
-- [ ] **Step 1: Add failing relay discovery tests**
+- [x] **Step 1: Add failing relay discovery tests**
 
 Use a loopback TCP HTTP mock as existing relay tests do. Add tests that return `8.8.8.0/24`, malformed text, and HTTP 503:
 
@@ -360,13 +360,13 @@ async fn relay_discovery_accepts_only_public_canonical_subnet() {
 
 Assert that the request method is `GET` and its query contains `subnet=1`.
 
-- [ ] **Step 2: Run discovery tests and confirm they fail**
+- [x] **Step 2: Run discovery tests and confirm they fail**
 
 Run: `cargo test -p dns_relay relay_discovery`
 
 Expected: compilation fails because discovery does not exist.
 
-- [ ] **Step 3: Implement the discovery request and RelayPicker state**
+- [x] **Step 3: Implement the discovery request and RelayPicker state**
 
 Add to `RelayPicker`:
 
@@ -379,7 +379,7 @@ Keep `RelayPicker::new` unchanged as the compatibility constructor. Add `RelayPi
 
 `effective_subnet` calls `effective_ipv4_subnet(configured, client_addr, discovered)`.
 
-- [ ] **Step 4: Add the Worker discovery response**
+- [x] **Step 4: Add the Worker discovery response**
 
 Before the POST-only branch in `assets/relay_worker.js`, handle only `GET` with `subnet=1`. Read `cf-connecting-ip`, require dotted IPv4 with four decimal octets, return `a.b.c.0/24`, and set:
 
@@ -405,7 +405,7 @@ Run: `node assets/relay_worker_test.mjs`
 
 Expected: all discovery helper assertions pass.
 
-- [ ] **Step 5: Add failing effective-subnet integration tests**
+- [x] **Step 5: Add failing effective-subnet integration tests**
 
 Add handler/client tests proving:
 
@@ -422,7 +422,7 @@ let second = cache_key_from_query_for_subnet(&query, Some([1, 1, 1])).unwrap();
 assert_ne!(first, second);
 ```
 
-- [ ] **Step 6: Run integration tests and confirm they fail**
+- [x] **Step 6: Run integration tests and confirm they fail**
 
 Run:
 
@@ -433,7 +433,7 @@ cargo test -p dns_relay discovered_subnet
 
 Expected: tests fail because handlers still derive cache scope and ECS directly from `src_addr`.
 
-- [ ] **Step 7: Thread one effective subnet through cache and transport**
+- [x] **Step 7: Thread one effective subnet through cache and transport**
 
 In `handler::resolve_query`, compute the subnet once from `relay_picker.effective_subnet(src_addr)` when a relay exists, otherwise from `public_ipv4_subnet(src_addr)`. Use it for `cache_key_from_query_for_subnet` and pass it to `resolve_transport`.
 
@@ -443,7 +443,7 @@ Change internal resolver signatures from `src_addr: SocketAddr` to `effective_su
 
 Update every `HandleQueryParams` constructor in `main.rs` and tests only if the final signature requires a new field; prefer computing from the existing `src_addr` and `relay_picker` fields to avoid widening the struct.
 
-- [ ] **Step 8: Run relay, handler, client, and cache tests, then commit**
+- [x] **Step 8: Run relay, handler, client, and cache tests, then commit**
 
 Run:
 
@@ -479,7 +479,7 @@ git commit -m "feat: preserve client geography through relays"
 - Produces: Rust direct and relay paths treat zero-only replies as ordinary candidate failures when secure mode is active.
 - Produces: Worker `isCacheableReply` rejects zero-only provider responses before Cache API writes.
 
-- [ ] **Step 1: Add a failing Rust hedge test**
+- [x] **Step 1: Add a failing Rust hedge test**
 
 Create two loopback UDP upstream mocks using the existing `mock_udp_resolver` pattern. The primary replies with `0.0.0.0`; the secondary replies with `8.8.8.8`. Call the internal candidate routine with `reject_unspecified = true`; this unit test exercises hedge acceptance directly while candidate filtering is covered in Task 2:
 
@@ -503,13 +503,13 @@ assert_eq!(parse_a_records(&response), [Ipv4Addr::new(8, 8, 8, 8)]);
 
 Also assert the zero response was never inserted into `ResponseCache` through `resolve_query`.
 
-- [ ] **Step 2: Run the Rust test and confirm it fails**
+- [x] **Step 2: Run the Rust test and confirm it fails**
 
 Run: `cargo test -p dns_relay zero_only_primary_uses_authenticated_secondary`
 
 Expected: the primary `0.0.0.0` response currently wins because `is_usable_response` checks only DNS flags and response code.
 
-- [ ] **Step 3: Apply the guard at the shared Rust acceptance boundary**
+- [x] **Step 3: Apply the guard at the shared Rust acceptance boundary**
 
 Change `is_usable_response` to take `reject_unspecified: bool`. Keep existing structural checks, then add:
 
@@ -519,7 +519,7 @@ Change `is_usable_response` to take `reject_unspecified: bool`. Keep existing st
 
 Pass `ResolverPicker::secure_only` into candidate resolution. For relay replies, apply the same guard in `resolve_transport` before returning success when secure mode is active; convert rejection to `Error::Other` so stale-if-error and `SERVFAIL` behavior remain unchanged.
 
-- [ ] **Step 4: Add a failing dependency-free Worker self-check**
+- [x] **Step 4: Add a failing dependency-free Worker self-check**
 
 Export `hasOnlyUnspecifiedAddresses` as a named export from the Worker module. Extend the `data:` module import in `assets/relay_worker_test.mjs`, then add local `aResponse(addresses)` and `noDataResponse()` fixture builders that emit a one-question DNS packet with compressed A answers. Assert zero-only, mixed, private, and NODATA fixtures:
 
@@ -530,17 +530,17 @@ assert.equal(hasOnlyUnspecifiedAddresses(aResponse("192.168.1.1")), false);
 assert.equal(hasOnlyUnspecifiedAddresses(noDataResponse()), false);
 ```
 
-- [ ] **Step 5: Run the Worker test and confirm it fails**
+- [x] **Step 5: Run the Worker test and confirm it fails**
 
 Run: `node assets/relay_worker_test.mjs`
 
 Expected: import fails because the named helper does not exist.
 
-- [ ] **Step 6: Implement the Worker Answer-section scan**
+- [x] **Step 6: Implement the Worker Answer-section scan**
 
 Add a bounded DNS-name skipper and walk only `ANCOUNT`. Recognize A length 4 and AAAA length 16. Return `true` only when at least one address exists and all address bytes are zero. Make `isCacheableReply` return false for this condition, causing `queryDoh` to reject and the existing `Promise.any`/third-provider fallback to continue. Do not rewrite responses.
 
-- [ ] **Step 7: Run focused Rust and Worker tests, then commit**
+- [x] **Step 7: Run focused Rust and Worker tests, then commit**
 
 Run:
 
@@ -572,7 +572,7 @@ git commit -m "feat: reject zero-address DNS sinkholes"
 - Documents: `secure_only`, `client_subnet`, automatic discovery, IPv4-only ECS, fail-closed behavior, and no-ECS continuation after discovery failure.
 - Verifies: the whole workspace and Worker asset without adding tooling.
 
-- [ ] **Step 1: Document the minimal configuration**
+- [x] **Step 1: Document the minimal configuration**
 
 Add commented safe examples without changing the default deployment behavior:
 
@@ -586,7 +586,7 @@ secure_only = false
 
 In `dns_relay/README.md`, state that discovery failure continues with authenticated DNS but without ECS, and that Google-chained-only setups need the override when exact geography is required.
 
-- [ ] **Step 2: Run formatting and the complete test suite**
+- [x] **Step 2: Run formatting and the complete test suite**
 
 Run:
 
@@ -598,7 +598,7 @@ node assets/relay_worker_test.mjs
 
 Expected: every Rust and Worker test passes.
 
-- [ ] **Step 3: Run strict lint and build checks**
+- [x] **Step 3: Run strict lint and build checks**
 
 Run:
 
@@ -609,7 +609,7 @@ cargo check --workspace --all-targets
 
 Expected: no errors or warnings promoted by Clippy. Existing workspace profile-location notices may still appear from Cargo.
 
-- [ ] **Step 4: Inspect the final diff for scope and secrets**
+- [x] **Step 4: Inspect the final diff for scope and secrets**
 
 Run:
 
@@ -622,7 +622,7 @@ git diff master...HEAD -- . ':!Cargo.lock'
 
 Confirm there are no relay keys, full discovered IPs, new dependencies, protocol-envelope changes, unrelated refactors, or accidental `Cargo.lock` edits.
 
-- [ ] **Step 5: Mark the plan complete and commit documentation**
+- [x] **Step 5: Mark the plan complete and commit documentation**
 
 Change completed checkboxes in this plan to `[x]`, then commit only the intended documentation and configuration changes:
 
@@ -631,7 +631,7 @@ git add conf.toml dns_relay/README.md docs/superpowers/plans/2026-08-28-secure-d
 git commit -m "docs: explain secure DNS response mode"
 ```
 
-- [ ] **Step 6: Record final branch evidence**
+- [x] **Step 6: Record final branch evidence**
 
 Run:
 

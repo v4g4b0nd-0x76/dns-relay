@@ -90,6 +90,12 @@ record_history = true
 # if true, resolved records for each domain are appended to history.txt.
 # useful if your ISP silently strips/alters A records and you want a record of it.
 
+# Reject unauthenticated UDP upstreams. At least one DoH, DoQ, or HTTPS relay is required.
+secure_only = false
+
+# Optional IPv4 /24 override; omit to discover through a direct relay Worker.
+# client_subnet = "8.8.8.0/24"
+
 # domains you want blocked (resolve to nothing / NXDOMAIN)
 drop_list = [
     "google.com",
@@ -110,6 +116,8 @@ resolvers = [
 ```
 
 Both `drop_list` and `redirect_list` support wildcard patterns (`*.example.com` matches both `example.com` and any subdomain). `resolvers` can mix DoH URLs and plain `ip:port` UDP resolvers; the healthiest/fastest ones are preferred automatically (see [Resolver searching](#resolver-searching)).
+
+With `secure_only = true`, plain UDP resolvers are excluded and zero-only A/AAAA sinkhole responses are rejected before caching. Startup fails unless at least one authenticated DoH, DoQ, or HTTPS relay path is configured.
 
 There's a built-in LRU cache — once a name has been resolved, repeat queries are served from memory instead of re-querying a resolver each time.
 
@@ -151,6 +159,8 @@ transport = "google_chained"
 ```
 
 `[[relay_conf.relay_instances]]` can be repeated as many times as you like, mixing transports freely; the tool round-robins across all configured instances. `transport` defaults to `"direct"` if omitted, so existing single-Worker configs don't need to change.
+
+In secure mode, a direct Worker relay discovers the caller's public IPv4 `/24` and sends it as ECS so CDN answers retain the client's geography. Discovery failure does not weaken transport security: DNS continues without ECS and retries later. Google-chained-only setups cannot discover the original address through Apps Script, so set `client_subnet` when exact geography is required.
 
 ### Why two transports
 
