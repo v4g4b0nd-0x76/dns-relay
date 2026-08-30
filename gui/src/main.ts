@@ -82,7 +82,7 @@ try {
       });
     } catch (error) {
       if (poll !== observabilityPoll || interactionActive()) return;
-      const unavailable = { error: String(error) };
+      const unavailable = { error: String(error), errorKind: "unavailable" as const };
       store.update((state) => {
         state.observability = { health: unavailable, metrics: unavailable };
       });

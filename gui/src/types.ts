@@ -60,6 +60,7 @@ export interface Metrics {
 export interface DataState<T> {
   value?: T;
   error?: string;
+  errorKind?: "connection_refused" | "unavailable";
 }
 
 export interface ObservabilitySnapshot {

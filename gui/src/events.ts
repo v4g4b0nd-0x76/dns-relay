@@ -20,7 +20,10 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
     if (action === "apply") await apply();
     if (action === "install") await install();
     if (action === "adopt") await adopt();
-    if (action === "add-resolver") editDraft((draft) => { draft.resolvers.push("https://1.1.1.1/dns-query"); });
+    if (action === "add-resolver") {
+      const resolver = root.querySelector<HTMLSelectElement>("[data-resolver-template]")?.value;
+      if (resolver) editDraft((draft) => { draft.resolvers.push(resolver); });
+    }
     if (action === "move-resolver") moveResolver(Number(button.dataset.index), Number(button.dataset.direction));
     if (action === "delete-resolver") editDraft((draft) => { draft.resolvers.splice(Number(button.dataset.index), 1); });
     if (action === "test-resolver") await testResolver(Number(button.dataset.index));

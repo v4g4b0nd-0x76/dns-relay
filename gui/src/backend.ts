@@ -69,12 +69,13 @@ export class FixtureBackend implements Backend {
   #installFails = false;
 
   #metricsFail = false;
+  #connectionRefused = false;
   #restartFails = false;
   #validationDelay = false;
   #secrets = new Map<string, string>();
   #secretCounter = 0;
 
-  constructor(mode: "default" | "first-launch" | "existing" | "partial-install" | "partial-existing" | "install-error" | "metrics-error" | "restart-error" | "service-error" | "validation-delay" = "default") {
+  constructor(mode: "default" | "first-launch" | "existing" | "partial-install" | "partial-existing" | "install-error" | "metrics-error" | "connection-refused" | "restart-error" | "service-error" | "validation-delay" = "default") {
     if (mode === "first-launch" || mode === "install-error") this.#state.service = "not_installed";
     if (mode === "existing") {
       this.#state.service = "running";
@@ -92,6 +93,8 @@ export class FixtureBackend implements Backend {
     }
     this.#installFails = mode === "install-error";
     this.#metricsFail = mode === "metrics-error";
+    this.#connectionRefused = mode === "connection-refused";
+    if (mode === "connection-refused") this.#state.service = "running";
     this.#restartFails = mode === "restart-error";
     this.#validationDelay = mode === "validation-delay";
     if (mode === "restart-error") this.#state.service = "running";
@@ -110,10 +113,14 @@ export class FixtureBackend implements Backend {
   }
 
   async getObservability(): Promise<ObservabilitySnapshot> {
+    if (this.#connectionRefused) {
+      const refused = { error: "Connection refused (os error 61)", errorKind: "connection_refused" as const };
+      return { health: refused, metrics: refused };
+    }
     return {
       health: { value: true },
       metrics: this.#metricsFail
-        ? { error: "Metrics endpoint is unavailable" }
+        ? { error: "Metrics endpoint is unavailable", errorKind: "unavailable" }
         : {
             value: {
               total_req: 18429,
@@ -312,7 +319,7 @@ export class TauriBackend implements Backend {
 export function createBackend(): Backend {
   if ("__TAURI_INTERNALS__" in window) return new TauriBackend();
   const mode = new URLSearchParams(window.location.search).get("fixture");
-  if (mode === "first-launch" || mode === "existing" || mode === "partial-install" || mode === "partial-existing" || mode === "install-error" || mode === "metrics-error" || mode === "restart-error" || mode === "service-error" || mode === "validation-delay") {
+  if (mode === "first-launch" || mode === "existing" || mode === "partial-install" || mode === "partial-existing" || mode === "install-error" || mode === "metrics-error" || mode === "connection-refused" || mode === "restart-error" || mode === "service-error" || mode === "validation-delay") {
     return new FixtureBackend(mode);
   }
   return new FixtureBackend();

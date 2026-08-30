@@ -219,6 +219,27 @@ fn macos_launchd_commands_use_only_fixed_paths_and_label() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn macos_launchd_status_requires_a_running_job() {
+    use crate::platform::macos::launchctl_service_status;
+
+    assert_eq!(
+        launchctl_service_status(true, "state = running\n", "").unwrap(),
+        ServiceStatus::Running
+    );
+    assert_eq!(
+        launchctl_service_status(true, "state = spawn scheduled\nlast exit code = 1\n", "")
+            .unwrap(),
+        ServiceStatus::Stopped
+    );
+    assert_eq!(
+        launchctl_service_status(false, "", "Could not find service").unwrap(),
+        ServiceStatus::Stopped
+    );
+    assert!(launchctl_service_status(false, "", "Operation not permitted").is_err());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn macos_elevation_keeps_helper_path_and_uuid_out_of_applescript_source() {
     let helper = Path::new("/Applications/DNS Relay's 日本.app/Contents/MacOS/dns_relay_admin");
     let command = elevation_command(helper, REQUEST_ID).unwrap();

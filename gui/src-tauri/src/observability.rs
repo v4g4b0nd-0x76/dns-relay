@@ -15,19 +15,56 @@ const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
 pub struct DataState<T> {
     pub value: Option<T>,
     pub error: Option<String>,
+    pub error_kind: Option<DataErrorKind>,
 }
 
 impl<T> DataState<T> {
-    fn from_result(result: Result<T, String>) -> Self {
+    fn from_result(result: Result<T, ObservabilityError>) -> Self {
         match result {
             Ok(value) => Self {
                 value: Some(value),
                 error: None,
+                error_kind: None,
             },
             Err(error) => Self {
                 value: None,
-                error: Some(error),
+                error: Some(error.message),
+                error_kind: Some(error.kind),
             },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataErrorKind {
+    ConnectionRefused,
+    Unavailable,
+}
+
+struct ObservabilityError {
+    kind: DataErrorKind,
+    message: String,
+}
+
+impl ObservabilityError {
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            kind: DataErrorKind::Unavailable,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<std::io::Error> for ObservabilityError {
+    fn from(error: std::io::Error) -> Self {
+        Self {
+            kind: if error.kind() == std::io::ErrorKind::ConnectionRefused {
+                DataErrorKind::ConnectionRefused
+            } else {
+                DataErrorKind::Unavailable
+            },
+            message: error.to_string(),
         }
     }
 }
@@ -58,17 +95,17 @@ pub async fn get_observability() -> ObservabilitySnapshot {
     let metrics = metrics_task.await;
     snapshot_from_results(
         health
-            .map_err(|error| error.to_string())
+            .map_err(|error| ObservabilityError::unavailable(error.to_string()))
             .and_then(|result| result),
         metrics
-            .map_err(|error| error.to_string())
+            .map_err(|error| ObservabilityError::unavailable(error.to_string()))
             .and_then(|result| result),
     )
 }
 
 fn snapshot_from_results(
-    health: Result<bool, String>,
-    metrics: Result<Metrics, String>,
+    health: Result<bool, ObservabilityError>,
+    metrics: Result<Metrics, ObservabilityError>,
 ) -> ObservabilitySnapshot {
     ObservabilitySnapshot {
         health: DataState::from_result(health),
@@ -76,45 +113,51 @@ fn snapshot_from_results(
     }
 }
 
-fn check_health() -> Result<bool, String> {
+fn check_health() -> Result<bool, ObservabilityError> {
     fetch_local("/health").map(|body| body.trim() == "ok")
 }
 
-fn read_metrics() -> Result<Metrics, String> {
-    serde_json::from_str(&fetch_local("/metrics")?).map_err(|error| error.to_string())
+fn read_metrics() -> Result<Metrics, ObservabilityError> {
+    serde_json::from_str(&fetch_local("/metrics")?)
+        .map_err(|error| ObservabilityError::unavailable(error.to_string()))
 }
 
-fn fetch_local(path: &str) -> Result<String, String> {
-    let address: SocketAddr = METRICS_ADDRESS
-        .parse()
-        .map_err(|error: std::net::AddrParseError| error.to_string())?;
+fn fetch_local(path: &str) -> Result<String, ObservabilityError> {
+    let address: SocketAddr =
+        METRICS_ADDRESS
+            .parse()
+            .map_err(|error: std::net::AddrParseError| {
+                ObservabilityError::unavailable(error.to_string())
+            })?;
     let mut stream =
-        TcpStream::connect_timeout(&address, IO_TIMEOUT).map_err(|error| error.to_string())?;
+        TcpStream::connect_timeout(&address, IO_TIMEOUT).map_err(ObservabilityError::from)?;
     stream
         .set_read_timeout(Some(IO_TIMEOUT))
-        .map_err(|error| error.to_string())?;
+        .map_err(ObservabilityError::from)?;
     stream
         .set_write_timeout(Some(IO_TIMEOUT))
-        .map_err(|error| error.to_string())?;
+        .map_err(ObservabilityError::from)?;
     write!(
         stream,
         "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(ObservabilityError::from)?;
     let mut response = String::new();
     stream
         .take(MAX_RESPONSE_BYTES)
         .read_to_string(&mut response)
-        .map_err(|error| error.to_string())?;
+        .map_err(ObservabilityError::from)?;
     let (headers, body) = response
         .split_once("\r\n\r\n")
-        .ok_or_else(|| "invalid local metrics response".to_string())?;
+        .ok_or_else(|| ObservabilityError::unavailable("invalid local metrics response"))?;
     if !headers
         .lines()
         .next()
         .is_some_and(|line| line.starts_with("HTTP/1.1 200 ") || line.starts_with("HTTP/1.0 200 "))
     {
-        return Err("local metrics endpoint returned an error".into());
+        return Err(ObservabilityError::unavailable(
+            "local metrics endpoint returned an error",
+        ));
     }
     Ok(body.to_string())
 }
@@ -125,11 +168,27 @@ mod tests {
 
     #[test]
     fn metrics_failure_does_not_erase_independent_health() {
-        let snapshot = snapshot_from_results(Ok(true), Err("metrics offline".into()));
+        let snapshot = snapshot_from_results(
+            Ok(true),
+            Err(ObservabilityError::unavailable("metrics offline")),
+        );
 
         assert_eq!(snapshot.health.value, Some(true));
         assert!(snapshot.health.error.is_none());
         assert!(snapshot.metrics.value.is_none());
         assert_eq!(snapshot.metrics.error.as_deref(), Some("metrics offline"));
+        assert_eq!(
+            snapshot.metrics.error_kind,
+            Some(DataErrorKind::Unavailable)
+        );
+    }
+
+    #[test]
+    fn connection_refused_has_a_stable_error_kind() {
+        let state = DataState::<bool>::from_result(Err(ObservabilityError::from(
+            std::io::Error::from(std::io::ErrorKind::ConnectionRefused),
+        )));
+
+        assert_eq!(state.error_kind, Some(DataErrorKind::ConnectionRefused));
     }
 }

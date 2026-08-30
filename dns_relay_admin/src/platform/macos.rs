@@ -141,19 +141,19 @@ impl MacosServiceManager {
 
 impl ServiceManager for MacosServiceManager {
     fn status(&self) -> Result<ServiceStatus, AdminError> {
-        Ok(if succeeds(&self.status_command())? {
-            ServiceStatus::Running
-        } else {
-            ServiceStatus::Stopped
-        })
+        let command = self.status_command();
+        let output = Command::new(&command.program)
+            .args(&command.args)
+            .output()?;
+        launchctl_service_status(
+            output.status.success(),
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        )
     }
 
     fn start(&self) -> Result<(), AdminError> {
-        if self.status()? == ServiceStatus::Stopped {
-            self.activate()
-        } else {
-            run(&self.restart_command())
-        }
+        self.restart()
     }
 
     fn stop(&self) -> Result<(), AdminError> {
@@ -161,8 +161,23 @@ impl ServiceManager for MacosServiceManager {
     }
 
     fn restart(&self) -> Result<(), AdminError> {
-        run(&self.restart_command())
+        let _ = run(&self.bootout_command());
+        self.activate()
     }
+}
+
+pub(crate) fn launchctl_service_status(
+    success: bool,
+    output: &str,
+    error: &str,
+) -> Result<ServiceStatus, AdminError> {
+    if success && output.lines().any(|line| line.trim() == "state = running") {
+        return Ok(ServiceStatus::Running);
+    }
+    if success || error.contains("Could not find service") {
+        return Ok(ServiceStatus::Stopped);
+    }
+    Err(AdminError::Operation(error.trim().to_owned()))
 }
 
 pub fn elevation_command(helper: &Path, request_id: &str) -> Result<CommandSpec, AdminError> {

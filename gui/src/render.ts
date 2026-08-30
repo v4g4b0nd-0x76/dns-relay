@@ -116,18 +116,20 @@ function heading(kicker: string, name: string, detail: string) {
 function renderDashboard(state: ShellState) {
   const service = state.applying ? "applying" : state.app.service;
   const running = service === "running";
+  const stopped = service === "stopped" || service === "not_installed";
   const action = running ? "Stop" : "Start";
   const draft = state.app.draft;
   const metrics = state.observability.metrics.value;
-  const health = state.observability.health.value === true;
+  const health = !stopped && state.observability.health.value === true;
+  const healthLabel = stopped ? "Service stopped" : (health ? "Healthy" : "Health unavailable");
   const cacheHit = metrics?.total_req
     ? `${Math.round((metrics.cached_count / metrics.total_req) * 100)}%`
     : "—";
   return `<section class="view" data-view="dashboard">${heading("Control", "Dashboard", "Service and resolver state at a glance")}
     ${renderWarnings(state)}
-    ${state.observability.health.error ? `<div class="notice warning">Health unavailable: ${escapeHtml(state.observability.health.error)}</div>` : ""}
-    ${state.observability.metrics.error ? `<div class="notice warning">Metrics unavailable: ${escapeHtml(state.observability.metrics.error)}</div>` : ""}
-    <div class="card hero"><button class="power-button" data-power data-state="${service}" data-action="toggle-service" data-focus="power" aria-label="${action} DNS Relay" title="${action} DNS Relay" ${state.applying || service === "not_installed" ? "disabled" : ""}><i data-lucide="power"></i></button><div><p class="eyebrow">Service status</p><h2 class="service-title" data-service-state>${title(service)}</h2><span class="${health ? "healthy" : "muted"}">${health ? "Healthy" : "Health unavailable"}</span><div class="detail-list"><div><span>Listener</span><strong>${escapeHtml(draft?.dns_target ?? "Unavailable")}</strong></div><div><span>Mode</span><strong>${draft?.secure_only ? "Secure only" : "Standard"}</strong></div><div><span>Transport</span><strong>Configured upstreams</strong></div><div><span>Changes</span><strong>${state.dirty ? "Pending" : "Saved"}</strong></div></div></div></div>
+    ${state.observability.health.error && (!stopped || state.observability.health.errorKind !== "connection_refused") ? `<div class="notice warning">Health unavailable: ${escapeHtml(state.observability.health.error)}</div>` : ""}
+    ${state.observability.metrics.error && (!stopped || state.observability.metrics.errorKind !== "connection_refused") ? `<div class="notice warning">Metrics unavailable: ${escapeHtml(state.observability.metrics.error)}</div>` : ""}
+    <div class="card hero"><button class="power-button" data-power data-state="${service}" data-action="toggle-service" data-focus="power" aria-label="${action} DNS Relay" title="${action} DNS Relay" ${state.applying || service === "not_installed" ? "disabled" : ""}><i data-lucide="power"></i></button><div><p class="eyebrow">Service status</p><h2 class="service-title" data-service-state>${title(service)}</h2><span class="${health ? "healthy" : "muted"}">${healthLabel}</span><div class="detail-list"><div><span>Listener</span><strong>${escapeHtml(draft?.dns_target ?? "Unavailable")}</strong></div><div><span>Mode</span><strong>${draft?.secure_only ? "Secure only" : "Standard"}</strong></div><div><span>Transport</span><strong>Configured upstreams</strong></div><div><span>Changes</span><strong>${state.dirty ? "Pending" : "Saved"}</strong></div></div></div></div>
     <div class="metrics">${metric("Requests", metrics?.total_req.toLocaleString() ?? "—", "arrow-up-right")}${metric("Cache hit", cacheHit, "database")}${metric("Failures", metrics?.failed_count.toLocaleString() ?? "—", "triangle-alert")}${metric("Timeouts", metrics?.timeout_count.toLocaleString() ?? "—", "timer")}</div>
     <div class="card empty-state">Recent events connect with bounded platform logs in the configuration checkpoint.</div>
   </section>`;
@@ -141,7 +143,7 @@ function renderResolvers(state: ShellState) {
   const draft = state.app.draft;
   const resolvers = draft?.resolvers ?? [];
   return `<section class="view" data-view="resolvers">${heading("Upstreams", "Resolvers", "Ordered UDP, DoH, and DoQ endpoints")}
-    <div class="toolbar"><span class="badge">${draft?.secure_only ? "Secure only" : "Mixed security"}</span><button class="button" data-action="add-resolver"><i data-lucide="plus"></i> Add resolver</button></div>
+    <div class="toolbar"><span class="badge">${draft?.secure_only ? "Secure only" : "Mixed security"}</span><label><span class="sr-only">New resolver transport</span><select aria-label="New resolver transport" data-resolver-template><option value="https://1.1.1.1/dns-query">DoH</option><option value="quic://9.9.9.9:853">DoQ</option><option value="1.1.1.1:53">UDP</option></select></label><button class="button" data-action="add-resolver"><i data-lucide="plus"></i> Add resolver</button></div>
     <div class="card">${resolvers.length ? resolvers.map((resolver, index) => {
       const probe = state.resolverProbes[resolver];
       return `<div class="row"><span class="badge transport">${resolverTransport(resolver)}</span><div class="row-main"><label><span class="sr-only">Resolver ${index + 1}</span><input data-config-path="resolvers.${index}" value="${escapeHtml(resolver)}"></label><span class="${probe?.value?.reachable ? "healthy" : "muted"}">${probe?.error ? escapeHtml(probe.error) : probe?.value ? `${escapeHtml(probe.value.message)} · ${probe.value.latencyMs} ms` : "Configured upstream"}</span></div><div class="row-actions">${iconAction("arrow-up", `Move resolver ${index + 1} up`, "move-resolver", `data-index="${index}" data-direction="-1" ${index === 0 ? "disabled" : ""}`)}${iconAction("arrow-down", `Move resolver ${index + 1} down`, "move-resolver", `data-index="${index}" data-direction="1" ${index === resolvers.length - 1 ? "disabled" : ""}`)}${iconAction("flask-conical", `Test resolver ${index + 1}`, "test-resolver", `data-index="${index}"`)}${iconAction("trash-2", `Delete resolver ${index + 1}`, "delete-resolver", `data-index="${index}"`)}</div></div>`;

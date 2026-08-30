@@ -53,12 +53,23 @@ test("repair preserves an existing config behind adoption", async ({ page }) => 
   await expect(page.locator("[data-view='dashboard']")).toBeVisible();
 });
 
-test("metrics failure does not erase service health", async ({ page }) => {
+test("stopped service keeps non-connection telemetry errors visible", async ({ page }) => {
   await page.setViewportSize({ width: 420, height: 720 });
   await page.goto(`${production}/?fixture=metrics-error`);
-  await expect(page.getByText("Healthy", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Metrics unavailable:/)).toBeVisible();
   await expect(page.locator("[data-service-state]")).toHaveText("Stopped");
+  await expect(page.getByText("Service stopped", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Metrics unavailable:/)).toBeVisible();
+});
+
+test("stopped service suppresses connection-refused endpoint noise", async ({ page }) => {
+  await page.setViewportSize({ width: 420, height: 720 });
+  await page.goto(`${production}/?fixture=connection-refused`);
+  await expect(page.locator("[data-service-state]")).toHaveText("Running");
+  await expect(page.getByText(/Health unavailable: Connection refused/)).toBeVisible();
+  await page.getByRole("button", { name: "Stop DNS Relay" }).click();
+  await expect(page.locator("[data-service-state]")).toHaveText("Stopped");
+  await expect(page.getByText("Service stopped", { exact: true })).toBeVisible();
+  await expect(page.getByText(/unavailable:/)).toHaveCount(0);
 });
 
 test("restart failure is reported without a false success state", async ({ page }) => {
@@ -138,10 +149,11 @@ test("production dialog restores focus and closes with Escape", async ({ page })
 test("resolver workflow preserves order, probes, and rejects insecure empty state", async ({ page }) => {
   await openApp(page);
   await page.locator("[data-target='resolvers']").click();
+  await page.getByLabel("New resolver transport").selectOption("quic://9.9.9.9:853");
   await page.getByRole("button", { name: "Add resolver" }).click();
   const resolvers = page.locator("[data-config-path^='resolvers.']");
   await expect(resolvers).toHaveCount(2);
-  await resolvers.nth(1).fill("quic://9.9.9.9:853");
+  await expect(resolvers.nth(1)).toHaveValue("quic://9.9.9.9:853");
   await page.getByRole("button", { name: "Move resolver 2 up" }).click();
   await expect(resolvers.nth(0)).toHaveValue("quic://9.9.9.9:853");
   await page.getByRole("button", { name: "Test resolver 1" }).click();
