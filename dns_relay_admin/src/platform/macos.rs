@@ -1,10 +1,4 @@
-use std::{
-    fs,
-    io::Write,
-    os::unix::fs::OpenOptionsExt,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{fs, path::Path, process::Command};
 
 use uuid::Uuid;
 
@@ -12,7 +6,7 @@ use crate::{
     AdminError, PlatformPaths,
     apply::{ServiceManager, ServiceStatus},
     parse_request_id,
-    platform::CommandSpec,
+    platform::{CommandSpec, atomic_copy, atomic_write, bundled_resolver, remove_if_present},
 };
 
 const LABEL: &str = "system/com.dns-relay.gui";
@@ -160,57 +154,6 @@ pub fn elevation_command(helper: &Path, request_id: &str) -> Result<CommandSpec,
     ))
 }
 
-fn bundled_resolver(helper: &Path) -> Result<PathBuf, AdminError> {
-    Ok(helper
-        .parent()
-        .ok_or_else(|| AdminError::Operation("admin helper path has no parent".into()))?
-        .join("dns_relay"))
-}
-
-fn atomic_copy(source: &Path, destination: &Path, mode: u32) -> Result<(), AdminError> {
-    let mut input = fs::File::open(source)?;
-    atomic_replace(destination, mode, |output| {
-        std::io::copy(&mut input, output)?;
-        Ok(())
-    })
-}
-
-fn atomic_write(destination: &Path, content: &[u8], mode: u32) -> Result<(), AdminError> {
-    atomic_replace(destination, mode, |output| {
-        output.write_all(content)?;
-        Ok(())
-    })
-}
-
-fn atomic_replace(
-    destination: &Path,
-    mode: u32,
-    write: impl FnOnce(&mut fs::File) -> Result<(), AdminError>,
-) -> Result<(), AdminError> {
-    let parent = destination
-        .parent()
-        .ok_or_else(|| AdminError::Operation("install path has no parent".into()))?;
-    fs::create_dir_all(parent)?;
-    let name = destination
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| AdminError::Operation("install filename is not valid UTF-8".into()))?;
-    let staged = parent.join(format!(".{name}.installing"));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true).mode(mode);
-    let mut output = options.open(&staged)?;
-    let result = write(&mut output).and_then(|()| {
-        output.sync_all()?;
-        fs::rename(&staged, destination)?;
-        fs::File::open(parent)?.sync_all()?;
-        Ok(())
-    });
-    if result.is_err() {
-        let _ = fs::remove_file(staged);
-    }
-    result
-}
-
 fn run(command: &CommandSpec) -> Result<(), AdminError> {
     if succeeds(command)? {
         Ok(())
@@ -236,13 +179,5 @@ fn require_root() -> Result<(), AdminError> {
         Err(AdminError::Operation(
             "macOS service changes require administrator authorization".into(),
         ))
-    }
-}
-
-fn remove_if_present(path: &Path) -> Result<(), AdminError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
     }
 }

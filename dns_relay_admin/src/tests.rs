@@ -5,6 +5,11 @@ use std::os::unix::{fs::PermissionsExt, fs::symlink};
 use tempfile::tempdir;
 use uuid::Uuid;
 
+#[cfg(unix)]
+use crate::platform::{
+    CommandSpec,
+    linux::{LinuxServiceManager, elevation_command_for, linux_invoking_uid_from},
+};
 use crate::{
     AdminAction, AdminError, AdminRequest, PlatformPaths,
     apply::{CommandRunner, ServiceManager, ServiceStatus, apply_config, staging_path},
@@ -15,12 +20,127 @@ use crate::{
 #[cfg(target_os = "macos")]
 use crate::paths::{invoking_uid, user_home};
 #[cfg(target_os = "macos")]
-use crate::platform::{
-    CommandSpec,
-    macos::{MacosServiceManager, elevation_command},
-};
+use crate::platform::macos::{MacosServiceManager, elevation_command};
 
 const REQUEST_ID: &str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+
+#[test]
+#[cfg(unix)]
+fn linux_systemctl_commands_are_closed_and_exact() {
+    let linux = LinuxServiceManager::new(PlatformPaths::for_test(Path::new("/tmp/linux-test")));
+
+    assert_eq!(
+        linux.daemon_reload_command(),
+        CommandSpec::new("/usr/bin/systemctl", ["daemon-reload"])
+    );
+    assert_eq!(
+        linux.enable_command(),
+        CommandSpec::new("/usr/bin/systemctl", ["enable", "dns-relay-gui.service"])
+    );
+    assert_eq!(
+        linux.disable_command(),
+        CommandSpec::new("/usr/bin/systemctl", ["disable", "dns-relay-gui.service"])
+    );
+    assert_eq!(
+        linux.start_command(),
+        CommandSpec::new("/usr/bin/systemctl", ["start", "dns-relay-gui.service"])
+    );
+    assert_eq!(
+        linux.stop_command(),
+        CommandSpec::new("/usr/bin/systemctl", ["stop", "dns-relay-gui.service"])
+    );
+    assert_eq!(
+        linux.restart_command(),
+        CommandSpec::new("/usr/bin/systemctl", ["restart", "dns-relay-gui.service"])
+    );
+    assert_eq!(
+        linux.status_command(),
+        CommandSpec::new(
+            "/usr/bin/systemctl",
+            ["is-active", "--quiet", "dns-relay-gui.service"]
+        )
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn linux_pkexec_passes_only_the_fixed_helper_and_uuid() {
+    let helper = Path::new("/opt/dns-relay-gui/dns_relay_admin");
+    let command = elevation_command_for(helper, REQUEST_ID, true).unwrap();
+
+    assert_eq!(
+        command,
+        CommandSpec::new(
+            "/usr/bin/pkexec",
+            [
+                "/opt/dns-relay-gui/dns_relay_admin",
+                "request",
+                "--request-id",
+                REQUEST_ID,
+            ]
+        )
+    );
+    assert!(elevation_command_for(helper, "$(touch /tmp/no)", true).is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn linux_missing_pkexec_returns_copyable_sudo_fallback() {
+    let error = elevation_command_for(
+        Path::new("/opt/dns-relay-gui/dns_relay_admin"),
+        REQUEST_ID,
+        false,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains(&format!(
+        "sudo /opt/dns-relay-gui/dns_relay_admin request --request-id {REQUEST_ID}"
+    )));
+}
+
+#[test]
+#[cfg(unix)]
+fn linux_elevation_uses_the_original_user_id() {
+    assert_eq!(linux_invoking_uid_from(501, None, None).unwrap(), 501);
+    assert_eq!(
+        linux_invoking_uid_from(0, Some("1000"), None).unwrap(),
+        1000
+    );
+    assert_eq!(
+        linux_invoking_uid_from(0, None, Some("1001")).unwrap(),
+        1001
+    );
+    assert!(linux_invoking_uid_from(0, Some("root"), None).is_err());
+    assert!(linux_invoking_uid_from(0, None, None).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn linux_install_payload_writes_hardened_fixed_files() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    let resolver = root.path().join("dns_relay");
+    let helper = root.path().join("dns_relay_admin");
+    fs::write(&resolver, "resolver").unwrap();
+    fs::write(&helper, "helper").unwrap();
+
+    LinuxServiceManager::new(paths.clone())
+        .install_payload(&resolver, &helper, VALID_CONFIG)
+        .unwrap();
+
+    assert_eq!(fs::read_to_string(&paths.config).unwrap(), VALID_CONFIG);
+    assert_eq!(
+        fs::metadata(&paths.config).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let service = fs::read_to_string(&paths.service_definition).unwrap();
+    assert!(service.contains("AmbientCapabilities=CAP_NET_BIND_SERVICE"));
+    assert!(service.contains("NoNewPrivileges=true"));
+    assert!(service.contains("ProtectSystem=strict"));
+    assert!(service.contains("ReadOnlyPaths=/opt/dns-relay-gui"));
+    let policy = fs::read_to_string(&paths.authorization_policy).unwrap();
+    assert!(policy.contains("/opt/dns-relay-gui/dns_relay_admin"));
+}
 
 #[cfg(target_os = "macos")]
 #[test]

@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 use std::env;
 
 use uuid::Uuid;
@@ -18,6 +18,7 @@ pub struct PlatformPaths {
     pub backup: PathBuf,
     pub logs: PathBuf,
     pub service_definition: PathBuf,
+    pub authorization_policy: PathBuf,
     request_dir: PathBuf,
     response_dir: PathBuf,
 }
@@ -67,6 +68,7 @@ impl PlatformPaths {
             backup: system.join("conf.toml.bak"),
             logs: system.join("logs"),
             service_definition: system.join("service"),
+            authorization_policy: system.join("authorization.policy"),
             request_dir: user.join("requests"),
             response_dir: user.join("responses"),
         }
@@ -144,6 +146,10 @@ fn expected_request_owner() -> Result<u32, AdminError> {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn expected_request_owner() -> Result<u32, AdminError> {
+    #[cfg(target_os = "linux")]
+    return crate::platform::linux::linux_invoking_uid();
+
+    #[cfg(not(target_os = "linux"))]
     Ok(unsafe { libc::geteuid() })
 }
 
@@ -207,6 +213,7 @@ fn platform_paths() -> Result<PlatformPaths, AdminError> {
         backup: system.join("conf.toml.bak"),
         logs: system.join("logs"),
         service_definition: PathBuf::from("/Library/LaunchDaemons/com.dns-relay.gui.plist"),
+        authorization_policy: system.join("authorization.policy"),
         request_dir: user.join("requests"),
         response_dir: user.join("responses"),
     })
@@ -215,10 +222,10 @@ fn platform_paths() -> Result<PlatformPaths, AdminError> {
 #[cfg(target_os = "linux")]
 fn platform_paths() -> Result<PlatformPaths, AdminError> {
     let system = PathBuf::from("/opt/dns-relay-gui");
-    let runtime = env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .ok_or_else(|| AdminError::InvalidRequestFile("XDG_RUNTIME_DIR is unavailable".into()))?
-        .join("dns-relay-gui");
+    let runtime = PathBuf::from(format!(
+        "/run/user/{}/dns-relay-gui",
+        crate::platform::linux::linux_invoking_uid()?
+    ));
     Ok(PlatformPaths {
         installed_binary: system.join("dns_relay"),
         admin_binary: system.join("dns_relay_admin"),
@@ -226,6 +233,7 @@ fn platform_paths() -> Result<PlatformPaths, AdminError> {
         backup: system.join("conf.toml.bak"),
         logs: PathBuf::from("/var/log/dns-relay-gui"),
         service_definition: PathBuf::from("/etc/systemd/system/dns-relay-gui.service"),
+        authorization_policy: PathBuf::from("/usr/share/polkit-1/actions/com.dns-relay.gui.policy"),
         request_dir: runtime.join("requests"),
         response_dir: runtime.join("responses"),
     })
@@ -255,6 +263,7 @@ fn platform_paths() -> Result<PlatformPaths, AdminError> {
         backup: program_data.join("conf.toml.bak"),
         logs: program_data.join("logs"),
         service_definition: program_data.join("DNSRelayGui.service"),
+        authorization_policy: program_data.join("authorization.policy"),
         request_dir: local_data.join("requests"),
         response_dir: local_data.join("responses"),
     })
