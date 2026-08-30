@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::{Read, Seek, SeekFrom},
-    net::{IpAddr, SocketAddr},
+    net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, atomic::Ordering::Relaxed},
@@ -995,8 +995,9 @@ fn valid_domain_pattern(value: &str) -> bool {
 }
 
 fn valid_redirect_target(value: &str) -> bool {
-    let value = value.trim();
-    value.parse::<IpAddr>().is_ok() || value.parse::<SocketAddr>().is_ok()
+    value
+        .split(',')
+        .all(|address| address.trim().parse::<Ipv4Addr>().is_ok())
 }
 
 fn require_secret_references(draft: &Conf) -> Result<(), CommandError> {

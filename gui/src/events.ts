@@ -53,6 +53,7 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
   root.addEventListener("change", async (event) => {
     const input = event.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
     if (input.matches("[data-config-path]")) setConfigInput(input);
+    if (input.matches("[data-rule-kind]")) showRuleTarget(input.value === "redirect");
     if (input.matches("[data-blocklist-import]")) await importBlocklist(input as HTMLInputElement);
     if (input.matches("[data-config-import]")) await importConfig(input as HTMLInputElement);
   });
@@ -227,21 +228,26 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
     const draft = store.get().app.draft;
     const domain = dialog?.querySelector<HTMLInputElement>("[name='domain']");
     const target = dialog?.querySelector<HTMLInputElement>("[name='target']");
-    if (!dialog || !domain || !target || !draft) return;
+    const ruleKind = dialog?.querySelector<HTMLSelectElement>("[name='kind']");
+    if (!dialog || !domain || !target || !ruleKind || !draft) return;
     dialog.dataset.kind = kind ?? "";
     dialog.dataset.index = index === undefined ? "" : String(index);
     if (kind === "drop" && index !== undefined) {
       domain.value = draft.drop_list[index] ?? "";
-      target.value = "drop";
+      ruleKind.value = "drop";
+      target.value = "";
     } else if (kind === "redirect" && index !== undefined) {
       const entry = draft.redirect_list[index] ?? "";
       const split = entry.indexOf(":");
       domain.value = entry.slice(0, split);
+      ruleKind.value = "redirect";
       target.value = entry.slice(split + 1);
     } else {
       domain.value = "";
-      target.value = "drop";
+      ruleKind.value = "drop";
+      target.value = "";
     }
+    showRuleTarget(ruleKind.value === "redirect");
     const error = dialog.querySelector<HTMLElement>("[data-rule-error]");
     if (error) error.textContent = "";
     dialog.showModal();
@@ -250,11 +256,12 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
 
   function saveRule() {
     const dialog = root.querySelector<HTMLDialogElement>("[data-rule-dialog]");
+    const kind = dialog?.querySelector<HTMLSelectElement>("[name='kind']")?.value;
     const domain = dialog?.querySelector<HTMLInputElement>("[name='domain']")?.value.trim().toLowerCase() ?? "";
     const target = dialog?.querySelector<HTMLInputElement>("[name='target']")?.value.trim().toLowerCase() ?? "";
     const error = dialog?.querySelector<HTMLElement>("[data-rule-error]");
-    if (!domain.includes(".") || (!target || (target !== "drop" && !target.split(",").every((entry) => /^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(entry))))) {
-      if (error) error.textContent = "Enter a domain and use drop or an IPv4 target.";
+    if (!domain.includes(".") || (kind === "redirect" && !target.split(",").every(validIpv4))) {
+      if (error) error.textContent = "Enter a valid domain and IPv4 address.";
       return;
     }
     const oldKind = dialog?.dataset.kind as "drop" | "redirect" | "";
@@ -262,10 +269,15 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
     editDraft((draft) => {
       if (oldKind === "drop") draft.drop_list.splice(oldIndex, 1);
       if (oldKind === "redirect") draft.redirect_list.splice(oldIndex, 1);
-      if (target === "drop") draft.drop_list.push(domain);
+      if (kind === "drop") draft.drop_list.push(domain);
       else draft.redirect_list.push(`${domain}:${target}`);
     });
     dialog?.close();
+  }
+
+  function showRuleTarget(show: boolean) {
+    const label = root.querySelector<HTMLElement>("[data-rule-target]");
+    if (label) label.hidden = !show;
   }
 
   function deleteRule(kind: "drop" | "redirect", index: number) {
@@ -526,6 +538,11 @@ function setPath(root: Record<string, unknown>, path: string, value: unknown) {
   const tail = parts[parts.length - 1];
   const last: string | number = Array.isArray(target) ? Number(tail) : tail;
   (target as Record<string | number, unknown>)[last] = value;
+}
+
+function validIpv4(value: string) {
+  const octets = value.trim().split(".");
+  return octets.length === 4 && octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255);
 }
 
 function configSecretReferences(draft: DnsRelayConfig) {

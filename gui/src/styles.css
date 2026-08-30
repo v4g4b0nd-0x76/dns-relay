@@ -48,6 +48,40 @@
   min-height: 96px;
 }
 
+.form-grid > .eyebrow {
+  grid-column: 1 / -1;
+}
+
+.security-toggle {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid var(--healthy);
+  border-radius: 999px;
+  background: var(--bg-alt);
+}
+
+.security-toggle .check-row {
+  min-height: 24px;
+  font-size: 12px;
+}
+
+.security-toggle input[type="checkbox"] {
+  width: 16px;
+  min-height: 16px;
+}
+
+.config-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+}
+
+.toolbar.config-actions > label.button {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
 @media (max-width: 759px) {
   .primary-nav {
     flex: none;

@@ -121,7 +121,7 @@ test("production service control reports its final state", async ({ page }) => {
 
 test("production draft can be reverted or applied", async ({ page }) => {
   await openApp(page);
-  await page.locator("[data-target='settings']").click();
+  await page.locator("[data-target='resolvers']").click();
   await page.getByLabel("Secure resolvers only").uncheck();
   await expect(page.getByLabel("Secure resolvers only")).toBeFocused();
   await expect(page.locator("[data-dirty-bar]")).toBeVisible();
@@ -149,6 +149,8 @@ test("production dialog restores focus and closes with Escape", async ({ page })
 test("resolver workflow preserves order, probes, and rejects insecure empty state", async ({ page }) => {
   await openApp(page);
   await page.locator("[data-target='resolvers']").click();
+  await expect(page.getByLabel("Secure resolvers only")).toHaveCount(1);
+  await expect(page.locator(".toolbar").getByLabel("Secure resolvers only")).toBeVisible();
   await page.getByLabel("New resolver transport").selectOption("quic://9.9.9.9:853");
   await page.getByRole("button", { name: "Add resolver" }).click();
   const resolvers = page.locator("[data-config-path^='resolvers.']");
@@ -168,21 +170,37 @@ test("rule workflow validates, creates, edits, deletes, and imports", async ({ p
   await openApp(page);
   await page.locator("[data-target='rules']").click();
   await page.getByRole("button", { name: "Add rule" }).click();
+  await expect(page.getByLabel("Rule type")).toHaveValue("drop");
+  await expect(page.getByLabel("IPv4 addresses")).toBeHidden();
+  await page.getByLabel("Rule type").selectOption("redirect");
+  await expect(page.getByLabel("IPv4 addresses")).toBeVisible();
   await page.getByLabel("Domain pattern").fill("bad");
-  await page.getByLabel("Rule target").fill("999");
+  await page.getByLabel("IPv4 addresses").fill("999.1.1.1");
   await page.getByRole("button", { name: "Save rule" }).click();
-  await expect(page.locator("[data-rule-error]")).toContainText("Enter a domain");
+  await expect(page.locator("[data-rule-error]")).toContainText("valid domain and IPv4");
   await page.getByLabel("Domain pattern").fill("ads.example");
-  await page.getByLabel("Rule target").fill("10.0.0.1");
+  await page.getByLabel("IPv4 addresses").fill("10.0.0.1");
   await page.getByRole("button", { name: "Save rule" }).click();
   await expect(page.getByText("ads.example", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Edit ads.example" }).click();
+  await expect(page.getByLabel("Rule type")).toHaveValue("redirect");
+  await expect(page.getByLabel("IPv4 addresses")).toHaveValue("10.0.0.1");
   await page.getByLabel("Domain pattern").fill("tracker.example");
   await page.getByRole("button", { name: "Save rule" }).click();
   await page.getByRole("button", { name: "Delete tracker.example" }).click();
   await expect(page.getByText("tracker.example", { exact: true })).toHaveCount(0);
   await page.locator("[data-blocklist-import]").setInputFiles({ name: "block.txt", mimeType: "text/plain", buffer: Buffer.from("one.example\n# ignored\ntwo.example\n") });
   await expect(page.getByText("one.example", { exact: true })).toBeVisible();
+});
+
+test("drop rule hides the redirect target", async ({ page }) => {
+  await openApp(page);
+  await page.locator("[data-target='rules']").click();
+  await page.getByRole("button", { name: "Add rule" }).click();
+  await page.getByLabel("Domain pattern").fill("drop.example");
+  await page.getByRole("button", { name: "Save rule" }).click();
+  await expect(page.getByText("drop.example", { exact: true })).toBeVisible();
+  await expect(page.getByText("drop", { exact: true })).toBeVisible();
 });
 
 test("relay secrets stay vaulted and probes report latency", async ({ page }) => {
@@ -307,5 +325,19 @@ for (const width of [420, 1024]) {
       }),
     );
     expect(overlaps).toEqual([]);
+  });
+
+  test(`settings actions fit their cards at ${width}px`, async ({ page }) => {
+    await openApp(page, width);
+    await page.locator("[data-target='settings']").click();
+    const overflow = await page.locator(".card input, .card select, .card textarea, .card button, .card label.button").evaluateAll((controls) =>
+      controls.filter((control) => {
+        const box = control.getBoundingClientRect();
+        const card = control.closest(".card")?.getBoundingClientRect();
+        return card && (box.left < card.left || box.right > card.right || box.width > card.width);
+      }).map((control) => control.outerHTML),
+    );
+    expect(overflow).toEqual([]);
+    await expect(page.locator("[data-config-import]").locator("..")).toHaveCSS("flex-grow", "0");
   });
 }

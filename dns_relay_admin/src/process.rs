@@ -13,16 +13,25 @@ pub struct SystemCommandRunner;
 
 impl CommandRunner for SystemCommandRunner {
     fn check_conf(&self, binary: &Path, config: &Path) -> Result<(), AdminError> {
-        let status = Command::new(binary)
-            .arg("--conf")
-            .arg(config)
-            .arg("check-conf")
-            .status()?;
-        if status.success() {
+        let mut command = Command::new(binary);
+        command.arg("--conf").arg(config).arg("check-conf");
+        if let Some(directory) = config.parent() {
+            command.current_dir(directory);
+        }
+        let output = command.output()?;
+        if output.status.success() {
             Ok(())
         } else {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            let detail = detail.trim();
             Err(AdminError::Operation(format!(
-                "dns_relay check-conf exited with {status}"
+                "dns_relay check-conf exited with {}{}",
+                output.status,
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                }
             )))
         }
     }

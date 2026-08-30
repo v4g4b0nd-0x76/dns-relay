@@ -15,6 +15,7 @@ use crate::{
     apply::{CommandRunner, ServiceManager, ServiceStatus, apply_config, staging_path},
     parse_request_id,
     paths::read_request_at,
+    process::SystemCommandRunner,
     sha256_file, verify_sha256,
 };
 
@@ -24,6 +25,40 @@ use crate::paths::{invoking_uid, user_home};
 use crate::platform::macos::{MacosServiceManager, elevation_command};
 
 const REQUEST_ID: &str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+
+#[cfg(unix)]
+#[test]
+fn check_conf_runs_beside_the_staged_config() {
+    let root = tempdir().unwrap();
+    let binary = root.path().join("check-conf");
+    let config = root.path().join("conf.toml");
+    fs::write(
+        &binary,
+        "#!/bin/sh\nexpected=$(cd \"$(dirname \"$2\")\" && pwd -P)\ntest \"$(pwd -P)\" = \"$expected\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(&config, "drop_list = []").unwrap();
+
+    SystemCommandRunner.check_conf(&binary, &config).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn check_conf_reports_child_stderr() {
+    let root = tempdir().unwrap();
+    let binary = root.path().join("check-conf");
+    let config = root.path().join("conf.toml");
+    fs::write(&binary, "#!/bin/sh\necho 'panic detail' >&2\nexit 101\n").unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(&config, "drop_list = []").unwrap();
+
+    let error = SystemCommandRunner
+        .check_conf(&binary, &config)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("panic detail"));
+}
 
 #[test]
 #[cfg(unix)]

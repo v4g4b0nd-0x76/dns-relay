@@ -157,6 +157,21 @@ fn gui_validation_rejects_invalid_network_and_rule_fields() {
 }
 
 #[test]
+fn redirect_rules_accept_only_ipv4_addresses() {
+    let mut draft = crate::state::starter_draft();
+    draft.redirect_list = vec![("router.example".into(), "::1".into())];
+
+    let result = validate_draft(draft);
+
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.code == "invalid_redirect_rule")
+    );
+}
+
+#[test]
 fn config_import_requires_vault_references_for_secrets() {
     let mut draft = crate::state::starter_draft();
     draft.relay_conf.relay_instances.push(Relay {
