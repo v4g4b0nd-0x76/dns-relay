@@ -20,6 +20,7 @@ pub use paths::PlatformPaths;
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum AdminAction {
     Status,
+    ReadConfig,
     Install {
         config_toml: String,
         expected_binary_sha256: String,
@@ -29,6 +30,7 @@ pub enum AdminAction {
     },
     Repair {
         expected_binary_sha256: String,
+        config_toml: String,
     },
     Uninstall,
     Start,
@@ -43,7 +45,9 @@ pub enum AdminAction {
 impl AdminAction {
     pub fn zeroize_sensitive(&mut self) {
         match self {
-            Self::Install { config_toml, .. } | Self::ApplyConfig { config_toml, .. } => {
+            Self::Install { config_toml, .. }
+            | Self::Repair { config_toml, .. }
+            | Self::ApplyConfig { config_toml, .. } => {
                 config_toml.zeroize();
             }
             _ => {}
@@ -63,6 +67,12 @@ pub struct AdminResponse {
     pub id: Uuid,
     pub ok: bool,
     pub message: String,
+}
+
+impl Drop for AdminResponse {
+    fn drop(&mut self) {
+        self.message.zeroize();
+    }
 }
 
 #[derive(Debug)]
@@ -145,6 +155,7 @@ pub fn run(cli: Cli) -> Result<(), AdminError> {
 trait AdminService: ServiceManager {
     fn install(&self, config_toml: &str) -> Result<(), AdminError>;
     fn update(&self) -> Result<(), AdminError>;
+    fn repair(&self, config_toml: &str) -> Result<(), AdminError>;
     fn uninstall(&self) -> Result<(), AdminError>;
 }
 
@@ -156,6 +167,10 @@ impl AdminService for platform::macos::MacosServiceManager {
 
     fn update(&self) -> Result<(), AdminError> {
         self.update()
+    }
+
+    fn repair(&self, config_toml: &str) -> Result<(), AdminError> {
+        self.repair(config_toml)
     }
 
     fn uninstall(&self) -> Result<(), AdminError> {
@@ -171,6 +186,10 @@ impl AdminService for platform::linux::LinuxServiceManager {
 
     fn update(&self) -> Result<(), AdminError> {
         self.update()
+    }
+
+    fn repair(&self, config_toml: &str) -> Result<(), AdminError> {
+        self.repair(config_toml)
     }
 
     fn uninstall(&self) -> Result<(), AdminError> {
@@ -204,6 +223,7 @@ fn execute_action(
             ServiceStatus::Stopped => "stopped",
         }
         .into()),
+        AdminAction::ReadConfig => fs::read_to_string(&paths.config).map_err(Into::into),
         AdminAction::Install {
             config_toml,
             expected_binary_sha256,
@@ -215,13 +235,19 @@ fn execute_action(
         }
         AdminAction::Update {
             expected_binary_sha256,
-        }
-        | AdminAction::Repair {
-            expected_binary_sha256,
         } => {
             verify_bundled_resolver(&expected_binary_sha256)?;
             service.update()?;
             Ok("updated".into())
+        }
+        AdminAction::Repair {
+            expected_binary_sha256,
+            config_toml,
+        } => {
+            let config_toml = Zeroizing::new(config_toml);
+            verify_bundled_resolver(&expected_binary_sha256)?;
+            service.repair(&config_toml)?;
+            Ok("repaired".into())
         }
         AdminAction::Uninstall => {
             service.uninstall()?;
@@ -261,6 +287,10 @@ fn verify_bundled_resolver(expected: &str) -> Result<(), AdminError> {
 
 fn verify_sha256_file(path: &Path, expected: &str) -> Result<(), AdminError> {
     verify_sha256(&fs::read(path)?, expected)
+}
+
+pub fn sha256_file(path: &Path) -> Result<String, AdminError> {
+    Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
 }
 
 pub(crate) fn verify_sha256(content: &[u8], expected: &str) -> Result<(), AdminError> {

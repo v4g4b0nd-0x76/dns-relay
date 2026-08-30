@@ -65,6 +65,22 @@ impl LinuxServiceManager {
         atomic_write(&self.paths.authorization_policy, POLICY, 0o644)
     }
 
+    pub(crate) fn repair_payload(
+        &self,
+        resolver_source: &Path,
+        helper_source: &Path,
+        config_toml: &str,
+    ) -> Result<(), AdminError> {
+        fs::create_dir_all(&self.paths.logs)?;
+        atomic_copy(resolver_source, &self.paths.installed_binary, 0o755)?;
+        atomic_copy(helper_source, &self.paths.admin_binary, 0o755)?;
+        if !self.paths.config.is_file() {
+            atomic_write(&self.paths.config, config_toml.as_bytes(), 0o600)?;
+        }
+        atomic_write(&self.paths.service_definition, UNIT, 0o644)?;
+        atomic_write(&self.paths.authorization_policy, POLICY, 0o644)
+    }
+
     pub fn install(&self, config_toml: &str) -> Result<(), AdminError> {
         require_root()?;
         let helper = env::current_exe()?;
@@ -83,6 +99,16 @@ impl LinuxServiceManager {
         atomic_copy(&helper, &self.paths.admin_binary, 0o755)?;
         run(&self.daemon_reload_command())?;
         run(&self.restart_command())
+    }
+
+    pub fn repair(&self, config_toml: &str) -> Result<(), AdminError> {
+        require_root()?;
+        let helper = env::current_exe()?;
+        let resolver = bundled_resolver(&helper)?;
+        self.repair_payload(&resolver, &helper, config_toml)?;
+        run(&self.daemon_reload_command())?;
+        run(&self.enable_command())?;
+        run(&self.restart_command()).or_else(|_| run(&self.start_command()))
     }
 
     pub fn uninstall(&self) -> Result<(), AdminError> {

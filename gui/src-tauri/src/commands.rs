@@ -1,15 +1,22 @@
-use std::{fs, process::Command, sync::Arc};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{Arc, atomic::Ordering::Relaxed},
+};
 
 use dns_relay::conf::Conf;
-use dns_relay_admin::{AdminAction, AdminRequest, PlatformPaths, platform::CommandSpec};
+use dns_relay_admin::{
+    AdminAction, AdminRequest, AdminResponse, PlatformPaths, platform::CommandSpec,
+};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     secrets::{SecretId, SecretStore},
-    state::BackendState,
+    state::{BackendState, starter_draft},
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -77,6 +84,7 @@ pub struct AppState {
     pub service: ServiceState,
     pub draft: Option<Conf>,
     pub warnings: Vec<String>,
+    pub recovery_required: bool,
 }
 
 #[derive(Serialize)]
@@ -102,24 +110,45 @@ pub struct ProbeResult {
 
 #[tauri::command]
 pub async fn get_app_state(state: State<'_, BackendState>) -> Result<AppState, CommandError> {
-    let service = tauri::async_runtime::spawn_blocking(current_service_state)
-        .await
-        .map_err(|error| CommandError::new("service_status_failed", error.to_string()))??;
+    let service_result = tauri::async_runtime::spawn_blocking(current_service_state).await;
     let draft = state
         .draft
         .lock()
         .map_err(|_| unavailable("draft state"))?
         .clone();
-    let warnings = draft
+    let mut warnings: Vec<String> = draft
         .is_none()
         .then(|| "Existing configuration must be adopted before editing".into())
         .into_iter()
         .collect();
+    let recovery_required = state.recovery_required.load(Relaxed);
+    if recovery_required {
+        warnings.push("Installation is incomplete; run Repair to restore fixed assets".into());
+    }
+    let service = match service_result {
+        Ok(Ok(service)) => service,
+        Ok(Err(error)) => {
+            warnings.push(format!("Service status unavailable: {error}"));
+            ServiceState::Error
+        }
+        Err(error) => {
+            warnings.push(format!("Service status task failed: {error}"));
+            ServiceState::Error
+        }
+    };
     Ok(AppState {
         service,
         draft,
         warnings,
+        recovery_required,
     })
+}
+
+#[tauri::command]
+pub async fn get_service_state() -> Result<ServiceState, CommandError> {
+    tauri::async_runtime::spawn_blocking(current_service_state)
+        .await
+        .map_err(|error| CommandError::new("service_status_failed", error.to_string()))?
 }
 
 #[tauri::command]
@@ -165,11 +194,8 @@ pub async fn apply_draft(
     let secrets = Arc::clone(&state.secrets);
     let apply_copy = draft.clone();
     let service = tauri::async_runtime::spawn_blocking(move || {
-        let mut materialized = materialize_for_apply(&apply_copy, secrets.as_ref())?;
-        let config_toml = materialized.to_toml();
-        zeroize_materialized_secrets(&mut materialized);
-        let config_toml =
-            config_toml.map_err(|error| CommandError::new("invalid_config", error.to_string()))?;
+        ensure_versions_match()?;
+        let config_toml = config_for_admin(&apply_copy, secrets.as_ref())?;
         submit_admin(AdminAction::ApplyConfig {
             config_toml,
             restart: true,
@@ -186,25 +212,144 @@ pub async fn apply_draft(
 }
 
 #[tauri::command]
-pub async fn service_action(action: ServiceAction) -> Result<ServiceState, CommandError> {
+pub async fn install_service(
+    state: State<'_, BackendState>,
+    draft: Conf,
+) -> Result<ApplyResult, CommandError> {
+    draft
+        .validate()
+        .map_err(|error| CommandError::new("invalid_config", error.to_string()))?;
+    let secrets = Arc::clone(&state.secrets);
+    let install_copy = draft.clone();
+    let service = tauri::async_runtime::spawn_blocking(move || {
+        let (helper, resolver) = bundled_paths()?;
+        require_sidecar(&helper, "admin helper")?;
+        require_sidecar(&resolver, "resolver")?;
+        let expected_binary_sha256 =
+            dns_relay_admin::sha256_file(&resolver).map_err(admin_error)?;
+        let config_toml = config_for_admin(&install_copy, secrets.as_ref())?;
+        submit_admin_with_helper(
+            AdminAction::Install {
+                config_toml,
+                expected_binary_sha256,
+            },
+            &helper,
+        )?;
+        current_service_state()
+    })
+    .await
+    .map_err(|error| CommandError::new("install_failed", error.to_string()))??;
+    *state.draft.lock().map_err(|_| unavailable("draft state"))? = Some(draft);
+    state.recovery_required.store(false, Relaxed);
+    Ok(ApplyResult {
+        service,
+        message: "DNS Relay installed".into(),
+    })
+}
+
+#[tauri::command]
+pub async fn adopt_service(state: State<'_, BackendState>) -> Result<Conf, CommandError> {
+    let migration_store = Arc::clone(&state.secrets);
+    let rollback_store = Arc::clone(&state.secrets);
+    let (mut draft, inserted) = tauri::async_runtime::spawn_blocking(move || {
+        let paths = PlatformPaths::current().map_err(admin_error)?;
+        require_sidecar(&paths.admin_binary, "installed admin helper")?;
+        let mut response =
+            request_admin_with_paths(AdminAction::ReadConfig, &paths, &paths.admin_binary)?;
+        let config_toml = Zeroizing::new(std::mem::take(&mut response.message));
+        let mut draft: Conf = toml::from_str(&config_toml)
+            .map_err(|error| CommandError::new("invalid_installed_config", error.to_string()))?;
+        draft
+            .validate()
+            .map_err(|error| CommandError::new("invalid_installed_config", error.to_string()))?;
+        let inserted = migrate_legacy_secrets(&mut draft, migration_store.as_ref())?;
+        Ok((draft, inserted))
+    })
+    .await
+    .map_err(|error| CommandError::new("adoption_failed", error.to_string()))??;
+    let mut state_draft = match state.draft.lock() {
+        Ok(state_draft) => state_draft,
+        Err(_) => {
+            for id in inserted {
+                let _ = rollback_store.delete(&id);
+            }
+            zeroize_materialized_secrets(&mut draft);
+            return Err(unavailable("draft state"));
+        }
+    };
+    *state_draft = Some(draft.clone());
+    state.recovery_required.store(false, Relaxed);
+    Ok(draft)
+}
+
+#[tauri::command]
+pub async fn service_action(
+    state: State<'_, BackendState>,
+    action: ServiceAction,
+) -> Result<ServiceState, CommandError> {
+    let repair_draft = if action == ServiceAction::Repair {
+        let recovery_required = state.recovery_required.load(Relaxed);
+        Some(
+            state
+                .draft
+                .lock()
+                .map_err(|_| unavailable("draft state"))?
+                .clone()
+                .or_else(|| recovery_required.then(starter_draft))
+                .ok_or_else(adoption_required)?,
+        )
+    } else {
+        None
+    };
+    let secrets = Arc::clone(&state.secrets);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let repair_config = repair_draft
+            .as_ref()
+            .map(|draft| config_for_admin(draft, secrets.as_ref()))
+            .transpose()?;
+        perform_service_action_with_config(action, repair_config)
+    })
+    .await
+    .map_err(|error| CommandError::new("service_action_failed", error.to_string()))?;
+    if result.is_ok() && matches!(action, ServiceAction::Repair | ServiceAction::Uninstall) {
+        state.recovery_required.store(false, Relaxed);
+    }
+    result
+}
+
+pub(crate) fn perform_service_action(action: ServiceAction) -> Result<ServiceState, CommandError> {
+    perform_service_action_with_config(action, None)
+}
+
+fn perform_service_action_with_config(
+    action: ServiceAction,
+    repair_config: Option<String>,
+) -> Result<ServiceState, CommandError> {
     let admin_action = match action {
         ServiceAction::Start => AdminAction::Start,
         ServiceAction::Stop => AdminAction::Stop,
         ServiceAction::Restart => AdminAction::Restart,
         ServiceAction::Uninstall => AdminAction::Uninstall,
         ServiceAction::Repair => {
-            return Err(CommandError::new(
-                "sidecar_unavailable",
-                "Repair is available after sidecar staging",
-            ));
+            let (helper, resolver) = bundled_paths()?;
+            require_sidecar(&helper, "admin helper")?;
+            require_sidecar(&resolver, "resolver")?;
+            let expected_binary_sha256 =
+                dns_relay_admin::sha256_file(&resolver).map_err(admin_error)?;
+            submit_admin_with_helper(
+                AdminAction::Repair {
+                    expected_binary_sha256,
+                    config_toml: repair_config.ok_or_else(|| {
+                        CommandError::new("repair_config_required", "Repair requires a valid draft")
+                    })?,
+                },
+                &helper,
+            )?;
+            return current_service_state();
         }
     };
-    tauri::async_runtime::spawn_blocking(move || {
-        submit_admin(admin_action)?;
-        current_service_state()
-    })
-    .await
-    .map_err(|error| CommandError::new("service_action_failed", error.to_string()))?
+    submit_admin(admin_action)?;
+    current_service_state()
 }
 
 #[tauri::command]
@@ -274,6 +419,78 @@ pub(crate) fn materialize_for_apply(
     }
 }
 
+fn config_for_admin(draft: &Conf, store: &impl SecretStore) -> Result<String, CommandError> {
+    let mut materialized = materialize_for_apply(draft, store)?;
+    let config_toml = materialized.to_toml();
+    zeroize_materialized_secrets(&mut materialized);
+    config_toml.map_err(|error| CommandError::new("invalid_config", error.to_string()))
+}
+
+pub(crate) fn migrate_legacy_secrets(
+    draft: &mut Conf,
+    store: &impl SecretStore,
+) -> Result<Vec<SecretId>, CommandError> {
+    let mut inserted = Vec::new();
+    let result = (|| {
+        for (index, relay) in draft.relay_conf.relay_instances.iter_mut().enumerate() {
+            migrate_secret(
+                &mut relay.relay_key,
+                "relay",
+                &format!("relayInstances.{index}.relayKey"),
+                store,
+                &mut inserted,
+            )?;
+        }
+        for (index, key) in draft.obfs_conf.keys.iter_mut().enumerate() {
+            migrate_secret(
+                key,
+                "obfs",
+                &format!("obfsKeys.{index}"),
+                store,
+                &mut inserted,
+            )?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        for id in inserted {
+            let _ = store.delete(&id);
+        }
+        zeroize_materialized_secrets(draft);
+        return Err(error);
+    }
+    Ok(inserted)
+}
+
+fn migrate_secret(
+    value: &mut String,
+    kind: &str,
+    field: &str,
+    store: &impl SecretStore,
+    inserted: &mut Vec<SecretId>,
+) -> Result<(), CommandError> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let plaintext = Zeroizing::new(std::mem::take(value));
+    if let Some(id) = plaintext.strip_prefix("vault://") {
+        SecretId::new(id).map_err(|error| {
+            CommandError::field("invalid_secret_reference", error.to_string(), field)
+        })?;
+        *value = plaintext.to_string();
+        return Ok(());
+    }
+    let id = SecretId::new(format!("adopted.{kind}.{}", Uuid::new_v4())).map_err(|error| {
+        CommandError::field("secret_migration_failed", error.to_string(), field)
+    })?;
+    store.put(&id, plaintext.as_bytes()).map_err(|error| {
+        CommandError::field("secret_migration_failed", error.to_string(), field)
+    })?;
+    *value = format!("vault://{}", id.as_str());
+    inserted.push(id);
+    Ok(())
+}
+
 fn materialize_reference(
     reference: &str,
     store: &impl SecretStore,
@@ -318,12 +535,32 @@ fn submit_admin(mut action: AdminAction) -> Result<(), CommandError> {
             return Err(admin_error(error));
         }
     };
+    let helper = paths.admin_binary.clone();
+    request_admin_with_paths(action, &paths, &helper).map(|_| ())
+}
+
+fn submit_admin_with_helper(mut action: AdminAction, helper: &Path) -> Result<(), CommandError> {
+    let paths = match PlatformPaths::current() {
+        Ok(paths) => paths,
+        Err(error) => {
+            action.zeroize_sensitive();
+            return Err(admin_error(error));
+        }
+    };
+    request_admin_with_paths(action, &paths, helper).map(|_| ())
+}
+
+fn request_admin_with_paths(
+    action: AdminAction,
+    paths: &PlatformPaths,
+    helper: &Path,
+) -> Result<AdminResponse, CommandError> {
     let id = Uuid::new_v4();
     let mut request = AdminRequest { id, action };
     let write_result = paths.write_request(&request);
     request.action.zeroize_sensitive();
     write_result.map_err(admin_error)?;
-    let command = elevation_command(&paths, id).inspect_err(|_| {
+    let command = elevation_command(helper, id).inspect_err(|_| {
         let _ = fs::remove_file(paths.request_path(id));
     })?;
     let status = Command::new(&command.program)
@@ -342,28 +579,23 @@ fn submit_admin(mut action: AdminAction) -> Result<(), CommandError> {
     }
     let response = paths.read_response(id);
     let _ = fs::remove_file(paths.response_path(id));
-    let response = response.map_err(admin_error)?;
+    let mut response = response.map_err(admin_error)?;
     if response.ok {
-        Ok(())
+        Ok(response)
     } else {
-        Err(CommandError::new("admin_failed", response.message))
+        let message = std::mem::take(&mut response.message);
+        Err(CommandError::new("admin_failed", message))
     }
 }
 
-fn elevation_command(paths: &PlatformPaths, id: Uuid) -> Result<CommandSpec, CommandError> {
+fn elevation_command(helper: &Path, id: Uuid) -> Result<CommandSpec, CommandError> {
     #[cfg(target_os = "macos")]
-    return dns_relay_admin::platform::macos::elevation_command(
-        &paths.admin_binary,
-        &id.to_string(),
-    )
-    .map_err(admin_error);
+    return dns_relay_admin::platform::macos::elevation_command(helper, &id.to_string())
+        .map_err(admin_error);
 
     #[cfg(target_os = "linux")]
-    return dns_relay_admin::platform::linux::elevation_command(
-        &paths.admin_binary,
-        &id.to_string(),
-    )
-    .map_err(admin_error);
+    return dns_relay_admin::platform::linux::elevation_command(helper, &id.to_string())
+        .map_err(admin_error);
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     Err(CommandError::new(
@@ -372,7 +604,72 @@ fn elevation_command(paths: &PlatformPaths, id: Uuid) -> Result<CommandSpec, Com
     ))
 }
 
-fn current_service_state() -> Result<ServiceState, CommandError> {
+fn bundled_paths() -> Result<(PathBuf, PathBuf), CommandError> {
+    std::env::current_exe()
+        .map(|executable| bundled_paths_from_exe(&executable))
+        .map_err(|error| CommandError::new("sidecar_unavailable", error.to_string()))
+}
+
+pub(crate) fn bundled_paths_from_exe(executable: &Path) -> (PathBuf, PathBuf) {
+    let parent = executable.parent().unwrap_or_else(|| Path::new("."));
+    #[cfg(target_os = "windows")]
+    return (
+        parent.join("dns_relay_admin.exe"),
+        parent.join("dns_relay.exe"),
+    );
+    #[cfg(not(target_os = "windows"))]
+    (parent.join("dns_relay_admin"), parent.join("dns_relay"))
+}
+
+fn require_sidecar(path: &Path, name: &str) -> Result<(), CommandError> {
+    path.is_file().then_some(()).ok_or_else(|| {
+        CommandError::new(
+            "sidecar_unavailable",
+            format!("Bundled {name} is missing at {}", path.display()),
+        )
+    })
+}
+
+fn ensure_versions_match() -> Result<(), CommandError> {
+    let paths = PlatformPaths::current().map_err(admin_error)?;
+    let (_, bundled) = bundled_paths()?;
+    require_sidecar(&bundled, "resolver")?;
+    require_sidecar(&paths.installed_binary, "installed resolver")?;
+    let bundled_version = binary_version(&bundled)?;
+    let installed_version = binary_version(&paths.installed_binary)?;
+    if version_outputs_match(&bundled_version, &installed_version) {
+        Ok(())
+    } else {
+        Err(CommandError::new(
+            "update_required",
+            format!(
+                "Bundled resolver {bundled_version} does not match installed resolver {installed_version}"
+            ),
+        ))
+    }
+}
+
+fn binary_version(path: &Path) -> Result<String, CommandError> {
+    let output = Command::new(path)
+        .arg("--version")
+        .output()
+        .map_err(|error| CommandError::new("version_check_failed", error.to_string()))?;
+    if !output.status.success() {
+        return Err(CommandError::new(
+            "version_check_failed",
+            format!("{} --version failed", path.display()),
+        ));
+    }
+    String::from_utf8(output.stdout)
+        .map(|version| version.trim().to_string())
+        .map_err(|error| CommandError::new("version_check_failed", error.to_string()))
+}
+
+pub(crate) fn version_outputs_match(bundled: &str, installed: &str) -> bool {
+    bundled.trim() == installed.trim() && !bundled.trim().is_empty()
+}
+
+pub(crate) fn current_service_state() -> Result<ServiceState, CommandError> {
     let paths = PlatformPaths::current().map_err(admin_error)?;
     if !paths.installed_binary.is_file() {
         return Ok(ServiceState::NotInstalled);

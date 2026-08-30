@@ -57,6 +57,16 @@ export interface Metrics {
   relay_resolved_count: number;
 }
 
+export interface DataState<T> {
+  value?: T;
+  error?: string;
+}
+
+export interface ObservabilitySnapshot {
+  health: DataState<boolean>;
+  metrics: DataState<Metrics>;
+}
+
 export interface DnsRelayConfig {
   dns_target: string;
   drop_list: string[];
@@ -94,6 +104,7 @@ export interface AppState {
   service: ServiceState;
   draft: DnsRelayConfig | null;
   warnings: string[];
+  recoveryRequired: boolean;
 }
 
 export interface ValidationResult {

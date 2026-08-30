@@ -49,7 +49,7 @@ const icons = {
 export function render(root: HTMLElement, state: ShellState) {
   const active = document.activeElement as HTMLElement | null;
   const focus = active && root.contains(active) ? active.dataset.focus : undefined;
-  const setup = state.app.draft === null || state.app.service === "not_installed";
+  const setup = state.app.recoveryRequired || state.app.draft === null || state.app.service === "not_installed";
   root.innerHTML = `<div class="app-shell" data-app-shell>
     <header class="app-header">
       <div class="brand"><img src="${appMark}" alt="" width="38" height="38"><div><strong>DNS Relay</strong><span>Local control plane</span></div></div>
@@ -100,11 +100,18 @@ function renderDashboard(state: ShellState) {
   const running = service === "running";
   const action = running ? "Stop" : "Start";
   const draft = state.app.draft;
+  const metrics = state.observability.metrics.value;
+  const health = state.observability.health.value === true;
+  const cacheHit = metrics?.total_req
+    ? `${Math.round((metrics.cached_count / metrics.total_req) * 100)}%`
+    : "—";
   return `<section class="view" data-view="dashboard">${heading("Control", "Dashboard", "Service and resolver state at a glance")}
     ${renderWarnings(state)}
-    <div class="card hero"><button class="power-button" data-power data-state="${service}" data-action="toggle-service" data-focus="power" aria-label="${action} DNS Relay" title="${action} DNS Relay" ${state.applying || service === "not_installed" ? "disabled" : ""}><i data-lucide="power"></i></button><div><p class="eyebrow">Service status</p><h2 class="service-title" data-service-state>${title(service)}</h2><span class="muted">Native service control</span><div class="detail-list"><div><span>Listener</span><strong>${escapeHtml(draft?.dns_target ?? "Unavailable")}</strong></div><div><span>Mode</span><strong>${draft?.secure_only ? "Secure only" : "Standard"}</strong></div><div><span>Transport</span><strong>Configured upstreams</strong></div><div><span>Changes</span><strong>${state.dirty ? "Pending" : "Saved"}</strong></div></div></div></div>
-    <div class="metrics">${metric("Requests", "—", "arrow-up-right")}${metric("Cache hit", "—", "database")}${metric("Failures", "—", "triangle-alert")}${metric("Latency", "—", "timer")}</div>
-    <div class="card empty-state">Live metrics and recent events connect in the next checkpoint.</div>
+    ${state.observability.health.error ? `<div class="notice warning">Health unavailable: ${escapeHtml(state.observability.health.error)}</div>` : ""}
+    ${state.observability.metrics.error ? `<div class="notice warning">Metrics unavailable: ${escapeHtml(state.observability.metrics.error)}</div>` : ""}
+    <div class="card hero"><button class="power-button" data-power data-state="${service}" data-action="toggle-service" data-focus="power" aria-label="${action} DNS Relay" title="${action} DNS Relay" ${state.applying || service === "not_installed" ? "disabled" : ""}><i data-lucide="power"></i></button><div><p class="eyebrow">Service status</p><h2 class="service-title" data-service-state>${title(service)}</h2><span class="${health ? "healthy" : "muted"}">${health ? "Healthy" : "Health unavailable"}</span><div class="detail-list"><div><span>Listener</span><strong>${escapeHtml(draft?.dns_target ?? "Unavailable")}</strong></div><div><span>Mode</span><strong>${draft?.secure_only ? "Secure only" : "Standard"}</strong></div><div><span>Transport</span><strong>Configured upstreams</strong></div><div><span>Changes</span><strong>${state.dirty ? "Pending" : "Saved"}</strong></div></div></div></div>
+    <div class="metrics">${metric("Requests", metrics?.total_req.toLocaleString() ?? "—", "arrow-up-right")}${metric("Cache hit", cacheHit, "database")}${metric("Failures", metrics?.failed_count.toLocaleString() ?? "—", "triangle-alert")}${metric("Timeouts", metrics?.timeout_count.toLocaleString() ?? "—", "timer")}</div>
+    <div class="card empty-state">Recent events connect with bounded platform logs in the configuration checkpoint.</div>
   </section>`;
 }
 
@@ -140,12 +147,15 @@ function renderSettings(state: ShellState) {
     warning: "Metrics unavailable; service status remains available",
     error: "Service failed. Open logs or run repair.",
   }[state.fixtureState];
-  return `<section class="view" data-view="settings">${heading("System", "Settings", "Listener, service, updates, and configuration")}${renderWarnings(state)}<div class="card form-grid"><label>Listener address<input value="${escapeHtml(draft?.dns_target ?? "")}" disabled></label><label class="check-row">Secure resolvers only<input type="checkbox" data-config="secure-only" data-focus="secure-only" ${draft?.secure_only ? "checked" : ""} ${state.applying ? "disabled" : ""}></label></div><div class="card"><p class="eyebrow">Shared states</p><div class="state-switches">${["normal", "loading", "empty", "warning", "error"].map((name) => `<button class="button ghost" data-action="fixture-state" data-state="${name}">${title(name as ServiceState)}</button>`).join("")}</div><div class="fixture" data-state="${state.fixtureState}">${fixture}</div></div></section>`;
+  return `<section class="view" data-view="settings">${heading("System", "Settings", "Listener, service, updates, and configuration")}${renderWarnings(state)}<div class="card form-grid"><label>Listener address<input value="${escapeHtml(draft?.dns_target ?? "")}" disabled></label><label class="check-row">Secure resolvers only<input type="checkbox" data-config="secure-only" data-focus="secure-only" ${draft?.secure_only ? "checked" : ""} ${state.applying ? "disabled" : ""}></label></div><div class="card"><div class="section-heading"><div><p class="eyebrow">Service</p><h2>${title(state.app.service)}</h2></div></div><div class="toolbar"><button class="button" data-action="service-action" data-service-action="restart">Restart</button><button class="button" data-action="service-action" data-service-action="repair">Repair</button><button class="button danger-button" data-action="service-action" data-service-action="uninstall">Uninstall</button></div></div><div class="card"><p class="eyebrow">Shared states</p><div class="state-switches">${["normal", "loading", "empty", "warning", "error"].map((name) => `<button class="button ghost" data-action="fixture-state" data-state="${name}">${title(name as ServiceState)}</button>`).join("")}</div><div class="fixture" data-state="${state.fixtureState}">${fixture}</div></div></section>`;
 }
 
 function renderSetup(state: ShellState) {
+  if (state.app.recoveryRequired) {
+    return `<section class="view setup" data-view="setup"><img src="${appMark}" alt=""><p class="eyebrow">Incomplete installation</p><h1>Repair DNS Relay</h1><p class="lead">Restore the fixed service assets while preserving an existing configuration.</p>${renderWarnings(state)}<button class="button primary" data-action="service-action" data-service-action="repair" ${state.applying ? "disabled" : ""}>${state.applying ? "Authorizing…" : "Repair installation"}</button></section>`;
+  }
   const existing = state.app.draft === null;
-  return `<section class="view setup" data-view="setup"><img src="${appMark}" alt=""><p class="eyebrow">${existing ? "Existing installation" : "First launch"}</p><h1>${existing ? "Adopt" : "Set up"} DNS Relay</h1><p class="lead">${existing ? "The installed configuration is protected from default replacement." : "Review the fixed install paths, then authorize one native install prompt."}</p>${renderWarnings(state)}<button class="button primary" disabled>${existing ? "Adoption" : "Installation"} connects in the next checkpoint</button></section>`;
+  return `<section class="view setup" data-view="setup"><img src="${appMark}" alt=""><p class="eyebrow">${existing ? "Existing installation" : "First launch"}</p><h1>${existing ? "Adopt" : "Set up"} DNS Relay</h1><p class="lead">${existing ? "The installed configuration is protected from default replacement. Legacy secrets move directly into Keychain." : "Review the fixed install paths, then authorize one native install prompt."}</p>${renderWarnings(state)}<button class="button primary" data-action="${existing ? "adopt" : "install"}" ${state.applying ? "disabled" : ""}>${state.applying ? "Authorizing…" : existing ? "Adopt existing configuration" : "Install and start"}</button></section>`;
 }
 
 function renderWarnings(state: ShellState) {

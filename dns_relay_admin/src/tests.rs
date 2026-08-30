@@ -15,7 +15,7 @@ use crate::{
     apply::{CommandRunner, ServiceManager, ServiceStatus, apply_config, staging_path},
     parse_request_id,
     paths::read_request_at,
-    verify_sha256,
+    sha256_file, verify_sha256,
 };
 
 #[cfg(target_os = "macos")]
@@ -141,6 +141,35 @@ fn linux_install_payload_writes_hardened_fixed_files() {
     assert!(service.contains("ReadOnlyPaths=/opt/dns-relay-gui"));
     let policy = fs::read_to_string(&paths.authorization_policy).unwrap();
     assert!(policy.contains("/opt/dns-relay-gui/dns_relay_admin"));
+}
+
+#[cfg(unix)]
+#[test]
+fn linux_repair_restores_assets_without_overwriting_config() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    fs::create_dir_all(paths.config.parent().unwrap()).unwrap();
+    fs::write(&paths.config, "keep-me").unwrap();
+    let resolver = root.path().join("dns_relay");
+    let helper = root.path().join("dns_relay_admin");
+    fs::write(&resolver, "resolver").unwrap();
+    fs::write(&helper, "helper").unwrap();
+
+    LinuxServiceManager::new(paths.clone())
+        .repair_payload(&resolver, &helper, VALID_CONFIG)
+        .unwrap();
+
+    assert_eq!(fs::read_to_string(&paths.config).unwrap(), "keep-me");
+    assert!(paths.service_definition.is_file());
+    assert!(paths.authorization_policy.is_file());
+
+    fs::remove_file(&paths.config).unwrap();
+    fs::remove_file(&paths.service_definition).unwrap();
+    LinuxServiceManager::new(paths.clone())
+        .repair_payload(&resolver, &helper, VALID_CONFIG)
+        .unwrap();
+    assert_eq!(fs::read_to_string(&paths.config).unwrap(), VALID_CONFIG);
+    assert!(paths.service_definition.is_file());
 }
 
 #[cfg(target_os = "macos")]
@@ -304,6 +333,34 @@ fn macos_update_payload_preserves_existing_config() {
     );
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_repair_restores_plist_without_overwriting_config() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    fs::create_dir_all(paths.config.parent().unwrap()).unwrap();
+    fs::write(&paths.config, "keep-me").unwrap();
+    let resolver = root.path().join("dns_relay");
+    let helper = root.path().join("dns_relay_admin");
+    fs::write(&resolver, "resolver").unwrap();
+    fs::write(&helper, "helper").unwrap();
+
+    MacosServiceManager::new(paths.clone())
+        .repair_payload(&resolver, &helper, VALID_CONFIG)
+        .unwrap();
+
+    assert_eq!(fs::read_to_string(&paths.config).unwrap(), "keep-me");
+    assert!(paths.service_definition.is_file());
+
+    fs::remove_file(&paths.config).unwrap();
+    fs::remove_file(&paths.service_definition).unwrap();
+    MacosServiceManager::new(paths.clone())
+        .repair_payload(&resolver, &helper, VALID_CONFIG)
+        .unwrap();
+    assert_eq!(fs::read_to_string(&paths.config).unwrap(), VALID_CONFIG);
+    assert!(paths.service_definition.is_file());
+}
+
 #[test]
 fn action_rejects_unknown_variants() {
     let error = serde_json::from_str::<AdminRequest>(&format!(
@@ -326,6 +383,24 @@ fn status_request_parses() {
 }
 
 #[test]
+fn read_config_uses_only_the_fixed_config_path() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    fs::create_dir_all(paths.config.parent().unwrap()).unwrap();
+    fs::write(&paths.config, VALID_CONFIG).unwrap();
+
+    let content = crate::execute_action(
+        AdminAction::ReadConfig,
+        &paths,
+        &FakeService::running(),
+        &FakeRunner::healthy(),
+    )
+    .unwrap();
+
+    assert_eq!(content, VALID_CONFIG);
+}
+
+#[test]
 fn malformed_request_id_is_rejected() {
     assert!(parse_request_id("../request").is_err());
 }
@@ -337,6 +412,10 @@ fn bundled_binary_hash_must_match_exact_sha256() {
     assert!(verify_sha256(b"abc", digest).is_ok());
     assert!(verify_sha256(b"abc", "not-a-digest").is_err());
     assert!(verify_sha256(b"changed", digest).is_err());
+    let root = tempdir().unwrap();
+    let binary = root.path().join("dns_relay");
+    fs::write(&binary, b"abc").unwrap();
+    assert_eq!(sha256_file(&binary).unwrap(), digest);
 }
 
 #[test]
@@ -512,6 +591,10 @@ impl crate::AdminService for FakeService {
     }
 
     fn update(&self) -> Result<(), AdminError> {
+        self.restart()
+    }
+
+    fn repair(&self, _config_toml: &str) -> Result<(), AdminError> {
         self.restart()
     }
 

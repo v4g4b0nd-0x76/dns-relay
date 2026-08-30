@@ -80,6 +80,21 @@ impl MacosServiceManager {
         atomic_copy(helper_source, &self.paths.admin_binary, 0o755)
     }
 
+    pub(crate) fn repair_payload(
+        &self,
+        resolver_source: &Path,
+        helper_source: &Path,
+        config_toml: &str,
+    ) -> Result<(), AdminError> {
+        fs::create_dir_all(&self.paths.logs)?;
+        atomic_copy(resolver_source, &self.paths.installed_binary, 0o755)?;
+        atomic_copy(helper_source, &self.paths.admin_binary, 0o755)?;
+        if !self.paths.config.is_file() {
+            atomic_write(&self.paths.config, config_toml.as_bytes(), 0o600)?;
+        }
+        atomic_write(&self.paths.service_definition, PLIST, 0o644)
+    }
+
     pub fn install(&self, config_toml: &str) -> Result<(), AdminError> {
         require_root()?;
         let helper_source = std::env::current_exe()?;
@@ -95,6 +110,15 @@ impl MacosServiceManager {
         let resolver_source = bundled_resolver(&helper_source)?;
         let _ = run(&self.bootout_command());
         self.update_payload(&resolver_source, &helper_source)?;
+        self.activate()
+    }
+
+    pub fn repair(&self, config_toml: &str) -> Result<(), AdminError> {
+        require_root()?;
+        let helper_source = std::env::current_exe()?;
+        let resolver_source = bundled_resolver(&helper_source)?;
+        let _ = run(&self.bootout_command());
+        self.repair_payload(&resolver_source, &helper_source, config_toml)?;
         self.activate()
     }
 

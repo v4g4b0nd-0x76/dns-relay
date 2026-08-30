@@ -1,11 +1,13 @@
-import type { AppState, DnsRelayConfig, ViewId } from "./types";
+import type { AppState, DnsRelayConfig, ObservabilitySnapshot, ViewId } from "./types";
 
 export interface ShellState {
   app: AppState;
+  observability: ObservabilitySnapshot;
   savedDraft: DnsRelayConfig | null;
   activeView: ViewId;
   dirty: boolean;
   applying: boolean;
+  serviceRevision: number;
   fixtureState: "normal" | "loading" | "empty" | "warning" | "error";
 }
 
@@ -17,6 +19,7 @@ export function createStore(initial: ShellState) {
     update(change: (draft: ShellState) => void) {
       const next = structuredClone(state);
       change(next);
+      if (JSON.stringify(next) === JSON.stringify(state)) return;
       state = next;
       listeners.forEach((listener) => listener(state));
     },
