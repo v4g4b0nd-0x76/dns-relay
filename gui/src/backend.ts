@@ -59,6 +59,7 @@ export class FixtureBackend implements Backend {
   }
 
   async applyDraft(draft: DnsRelayConfig): Promise<ApplyResult> {
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
     this.#state.draft = structuredClone(draft);
     return { service: this.#state.service, message: "Configuration applied" };
   }
