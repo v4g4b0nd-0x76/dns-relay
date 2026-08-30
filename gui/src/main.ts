@@ -10,9 +10,11 @@ if (!root) throw new Error("Missing application root");
 const backend = createBackend();
 
 try {
-  const [app, observability] = await Promise.all([
+  const [app, observability, logs, history] = await Promise.all([
     backend.getAppState(),
     backend.getObservability(),
+    backend.readLogs(250).then((value) => ({ value }), (error) => ({ error: String(error) })),
+    backend.readHistory(250).then((value) => ({ value }), (error) => ({ error: String(error) })),
   ]);
   const store = createStore({
     savedDraft: structuredClone(app.draft),
@@ -21,7 +23,18 @@ try {
     activeView: "dashboard",
     dirty: false,
     applying: false,
+    secretBusy: false,
     serviceRevision: 0,
+    logs,
+    history,
+    resolverProbes: {},
+    relayProbes: {},
+    revealedSecrets: {},
+    generatedSecrets: [],
+    pendingSecretDeletes: [],
+    activityFilter: "",
+    activityPaused: false,
+    rawToml: "",
     fixtureState: "normal",
   });
   store.subscribe((state) => render(root, state));
@@ -52,9 +65,21 @@ try {
     if (interactionActive()) return;
     const poll = ++observabilityPoll;
     try {
-      const observability = await backend.getObservability();
+      const [observability, logs, history] = await Promise.all([
+        backend.getObservability(),
+        store.get().activityPaused
+          ? Promise.resolve(store.get().logs)
+          : backend.readLogs(250).then((value) => ({ value }), (error) => ({ error: String(error) })),
+        store.get().activityPaused
+          ? Promise.resolve(store.get().history)
+          : backend.readHistory(250).then((value) => ({ value }), (error) => ({ error: String(error) })),
+      ]);
       if (poll !== observabilityPoll || interactionActive()) return;
-      store.update((state) => { state.observability = observability; });
+      store.update((state) => {
+        state.observability = observability;
+        state.logs = logs;
+        state.history = history;
+      });
     } catch (error) {
       if (poll !== observabilityPoll || interactionActive()) return;
       const unavailable = { error: String(error) };

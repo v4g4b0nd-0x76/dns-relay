@@ -107,6 +107,12 @@ export interface AppState {
   recoveryRequired: boolean;
 }
 
+export interface ProbeResult {
+  reachable: boolean;
+  message: string;
+  latencyMs: number;
+}
+
 export interface ValidationResult {
   valid: boolean;
   errors: CommandError[];

@@ -5,6 +5,7 @@ import type {
   ApplyResult,
   DnsRelayConfig,
   ObservabilitySnapshot,
+  ProbeResult,
   ServiceState,
   ValidationResult,
 } from "./types";
@@ -20,6 +21,16 @@ export interface Backend {
   serviceAction(
     action: "start" | "stop" | "restart" | "repair" | "uninstall",
   ): Promise<ServiceState>;
+  testResolver(resolver: string): Promise<ProbeResult>;
+  testRelay(relayUrl: string): Promise<ProbeResult>;
+  readLogs(limit: number): Promise<string[]>;
+  readHistory(limit: number): Promise<string[]>;
+  parseConfig(configToml: string): Promise<DnsRelayConfig>;
+  parseBlocklist(content: string): Promise<string[]>;
+  exportConfig(draft: DnsRelayConfig, plaintext: boolean): Promise<string>;
+  generateSecret(kind: "relay" | "obfs"): Promise<string>;
+  revealSecret(reference: string): Promise<string>;
+  deleteSecret(reference: string): Promise<void>;
 }
 
 const fixtureConfig: DnsRelayConfig = {
@@ -59,8 +70,11 @@ export class FixtureBackend implements Backend {
 
   #metricsFail = false;
   #restartFails = false;
+  #validationDelay = false;
+  #secrets = new Map<string, string>();
+  #secretCounter = 0;
 
-  constructor(mode: "default" | "first-launch" | "existing" | "partial-install" | "partial-existing" | "install-error" | "metrics-error" | "restart-error" | "service-error" = "default") {
+  constructor(mode: "default" | "first-launch" | "existing" | "partial-install" | "partial-existing" | "install-error" | "metrics-error" | "restart-error" | "service-error" | "validation-delay" = "default") {
     if (mode === "first-launch" || mode === "install-error") this.#state.service = "not_installed";
     if (mode === "existing") {
       this.#state.service = "running";
@@ -79,6 +93,7 @@ export class FixtureBackend implements Backend {
     this.#installFails = mode === "install-error";
     this.#metricsFail = mode === "metrics-error";
     this.#restartFails = mode === "restart-error";
+    this.#validationDelay = mode === "validation-delay";
     if (mode === "restart-error") this.#state.service = "running";
     if (mode === "service-error") {
       this.#state.service = "error";
@@ -114,7 +129,11 @@ export class FixtureBackend implements Backend {
     };
   }
 
-  async validateDraft(): Promise<ValidationResult> {
+  async validateDraft(draft: DnsRelayConfig): Promise<ValidationResult> {
+    if (this.#validationDelay) await new Promise((resolve) => window.setTimeout(resolve, 300));
+    if (draft.secure_only && !draft.resolvers.some((resolver) => resolver.startsWith("https://") || resolver.startsWith("quic://")) && !draft.relay_conf.enable) {
+      return { valid: false, errors: [{ code: "invalid_config", message: "secure_only requires an authenticated resolver or relay" }] };
+    }
     return { valid: true, errors: [] };
   }
 
@@ -149,6 +168,68 @@ export class FixtureBackend implements Backend {
     if (action === "uninstall") this.#state.service = "not_installed";
     if (action === "repair" || action === "uninstall") this.#state.recoveryRequired = false;
     return this.#state.service;
+  }
+
+  async testResolver(resolver: string): Promise<ProbeResult> {
+    if (!resolver || resolver.startsWith("http://")) throw new Error("invalid resolver");
+    return { reachable: true, message: "Resolver is reachable", latencyMs: 31 };
+  }
+
+  async testRelay(relayUrl: string): Promise<ProbeResult> {
+    if (!relayUrl.startsWith("https://")) throw new Error("Relay URL must use HTTPS");
+    return { reachable: true, message: "Relay responded with 200 OK", latencyMs: 82 };
+  }
+
+  async readLogs(limit: number): Promise<string[]> {
+    return [
+      "19:40:01 INFO resolver ready on 127.0.0.1:53",
+      "19:41:18 WARN blocked tracker.example",
+    ].slice(-limit);
+  }
+
+  async readHistory(limit: number): Promise<string[]> {
+    return ["example.com 93.184.216.34", "tracker.example 0.0.0.0"].slice(-limit);
+  }
+
+  async parseConfig(configToml: string): Promise<DnsRelayConfig> {
+    if (configToml.includes("invalid")) throw new Error("invalid config");
+    const draft = structuredClone(this.#state.draft ?? fixtureConfig);
+    if (/secure_only\s*=\s*false/.test(configToml)) draft.secure_only = false;
+    if (configToml.includes("fixture_duplicate_generated_secret") && this.#secretCounter) {
+      const relay_key = `vault://relay.fixture.${this.#secretCounter}`;
+      draft.relay_conf.relay_instances = [
+        { relay_url: "https://one.example/dns-query", transport: "direct", relay_key },
+        { relay_url: "https://two.example/dns-query", transport: "direct", relay_key },
+      ];
+    }
+    return draft;
+  }
+
+  async parseBlocklist(content: string): Promise<string[]> {
+    return content.split(/\r?\n/).map((line) => line.trim().split(/\s+/).pop() ?? "").filter((line) => line.includes(".") && !line.startsWith("#"));
+  }
+
+  async exportConfig(draft: DnsRelayConfig, plaintext: boolean): Promise<string> {
+    const secrets = draft.relay_conf.relay_instances.map((relay) =>
+      plaintext ? "demo-plaintext-secret" : relay.relay_key,
+    );
+    return `dns_target = "${draft.dns_target}"\nsecure_only = ${draft.secure_only}\nrelay_keys = ${JSON.stringify(secrets)}`;
+  }
+
+  async generateSecret(kind: "relay" | "obfs"): Promise<string> {
+    const reference = `vault://${kind}.fixture.${++this.#secretCounter}`;
+    this.#secrets.set(reference, `fixture-secret-${this.#secretCounter}`);
+    return reference;
+  }
+
+  async revealSecret(reference: string): Promise<string> {
+    const value = this.#secrets.get(reference);
+    if (!value) throw new Error("secret is missing");
+    return value;
+  }
+
+  async deleteSecret(reference: string): Promise<void> {
+    this.#secrets.delete(reference);
   }
 }
 
@@ -186,12 +267,52 @@ export class TauriBackend implements Backend {
   ): Promise<ServiceState> {
     return invoke("service_action", { action });
   }
+
+  testResolver(resolver: string): Promise<ProbeResult> {
+    return invoke("test_resolver", { resolver });
+  }
+
+  testRelay(relayUrl: string): Promise<ProbeResult> {
+    return invoke("test_relay", { relayUrl });
+  }
+
+  readLogs(limit: number): Promise<string[]> {
+    return invoke("read_logs", { limit });
+  }
+
+  readHistory(limit: number): Promise<string[]> {
+    return invoke("read_history", { limit });
+  }
+
+  parseConfig(configToml: string): Promise<DnsRelayConfig> {
+    return invoke("parse_config", { configToml });
+  }
+
+  parseBlocklist(content: string): Promise<string[]> {
+    return invoke("parse_blocklist", { content });
+  }
+
+  exportConfig(draft: DnsRelayConfig, plaintext: boolean): Promise<string> {
+    return invoke("export_config", { draft, plaintext });
+  }
+
+  generateSecret(kind: "relay" | "obfs"): Promise<string> {
+    return invoke("generate_secret", { kind });
+  }
+
+  revealSecret(reference: string): Promise<string> {
+    return invoke("reveal_secret", { reference });
+  }
+
+  deleteSecret(reference: string): Promise<void> {
+    return invoke("delete_secret", { reference });
+  }
 }
 
 export function createBackend(): Backend {
   if ("__TAURI_INTERNALS__" in window) return new TauriBackend();
   const mode = new URLSearchParams(window.location.search).get("fixture");
-  if (mode === "first-launch" || mode === "existing" || mode === "partial-install" || mode === "partial-existing" || mode === "install-error" || mode === "metrics-error" || mode === "restart-error" || mode === "service-error") {
+  if (mode === "first-launch" || mode === "existing" || mode === "partial-install" || mode === "partial-existing" || mode === "install-error" || mode === "metrics-error" || mode === "restart-error" || mode === "service-error" || mode === "validation-delay") {
     return new FixtureBackend(mode);
   }
   return new FixtureBackend();

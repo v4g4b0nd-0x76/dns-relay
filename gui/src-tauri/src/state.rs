@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
-use dns_relay::conf::{Conf, ObfsConf, ResolverSearchingConf};
+use dns_relay::conf::{Conf, ObfsConf, RelayConf, ResolverSearchingConf};
 use dns_relay_admin::PlatformPaths;
 
 use crate::secrets::{KeyringBackend, SecretManager};
@@ -61,6 +61,10 @@ pub(crate) fn starter_draft() -> Conf {
         resolver_searching: ResolverSearchingConf {
             ipv4: true,
             doh: true,
+            ..Default::default()
+        },
+        relay_conf: RelayConf {
+            relay_timeout_sec: 5,
             ..Default::default()
         },
         metric_conf: shared::metric_wrapper::MetricConf {

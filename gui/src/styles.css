@@ -32,6 +32,22 @@
   flex: none;
 }
 
+.field-error {
+  min-height: 1.25em;
+  color: var(--danger, #d95c5c);
+}
+
+.row-main label,
+.row-main input,
+.view textarea,
+.view select {
+  width: 100%;
+}
+
+.view textarea {
+  min-height: 96px;
+}
+
 @media (max-width: 759px) {
   .primary-nav {
     flex: none;

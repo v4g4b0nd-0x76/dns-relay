@@ -6,8 +6,9 @@ pub mod tray;
 mod vault;
 
 use commands::{
-    adopt_service, apply_draft, get_app_state, get_service_state, install_service, load_draft,
-    read_history, read_logs, service_action, test_relay, test_resolver, validate_draft,
+    adopt_service, apply_draft, delete_secret, export_config, generate_secret, get_app_state,
+    get_service_state, install_service, load_draft, parse_blocklist, parse_config, read_history,
+    read_logs, reveal_secret, service_action, test_relay, test_resolver, validate_draft,
 };
 use observability::get_observability;
 use state::BackendState;
@@ -32,7 +33,13 @@ pub fn run() {
             test_resolver,
             test_relay,
             read_logs,
-            read_history
+            read_history,
+            parse_config,
+            parse_blocklist,
+            export_config,
+            generate_secret,
+            reveal_secret,
+            delete_secret
         ])
         .run(tauri::generate_context!())
         .expect("failed to run DNS Relay GUI");

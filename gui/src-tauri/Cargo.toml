@@ -36,3 +36,6 @@ keyring = { version = "3.6.3", default-features = false, features = ["windows-na
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["crypto-rust", "sync-secret-service"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

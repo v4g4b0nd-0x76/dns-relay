@@ -1,8 +1,11 @@
 use std::{
     fs,
+    io::{Read, Seek, SeekFrom},
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, atomic::Ordering::Relaxed},
+    time::Instant,
 };
 
 use dns_relay::conf::Conf;
@@ -106,6 +109,7 @@ pub struct ApplyResult {
 pub struct ProbeResult {
     pub reachable: bool,
     pub message: String,
+    pub latency_ms: u128,
 }
 
 #[tauri::command]
@@ -163,15 +167,17 @@ pub fn load_draft(state: State<'_, BackendState>) -> Result<Conf, CommandError> 
 
 #[tauri::command]
 pub fn validate_draft(draft: Conf) -> ValidationResult {
-    match draft.validate() {
-        Ok(()) => ValidationResult {
+    let errors = gui_validation_errors(&draft);
+    if errors.is_empty() {
+        ValidationResult {
             valid: true,
             errors: Vec::new(),
-        },
-        Err(error) => ValidationResult {
+        }
+    } else {
+        ValidationResult {
             valid: false,
-            errors: vec![CommandError::new("invalid_config", error.to_string())],
-        },
+            errors,
+        }
     }
 }
 
@@ -188,9 +194,7 @@ pub async fn apply_draft(
     {
         return Err(adoption_required());
     }
-    draft
-        .validate()
-        .map_err(|error| CommandError::new("invalid_config", error.to_string()))?;
+    require_valid_draft(&draft)?;
     let secrets = Arc::clone(&state.secrets);
     let apply_copy = draft.clone();
     let service = tauri::async_runtime::spawn_blocking(move || {
@@ -216,9 +220,7 @@ pub async fn install_service(
     state: State<'_, BackendState>,
     draft: Conf,
 ) -> Result<ApplyResult, CommandError> {
-    draft
-        .validate()
-        .map_err(|error| CommandError::new("invalid_config", error.to_string()))?;
+    require_valid_draft(&draft)?;
     let secrets = Arc::clone(&state.secrets);
     let install_copy = draft.clone();
     let service = tauri::async_runtime::spawn_blocking(move || {
@@ -353,16 +355,31 @@ fn perform_service_action_with_config(
 }
 
 #[tauri::command]
-pub fn test_resolver(resolver: String) -> Result<ProbeResult, CommandError> {
+pub async fn test_resolver(resolver: String) -> Result<ProbeResult, CommandError> {
     reject_empty(&resolver, "resolver")?;
-    Err(CommandError::new(
-        "probe_unavailable",
-        "Resolver probes are not connected yet",
-    ))
+    if !valid_resolver(&resolver) {
+        return Err(CommandError::field(
+            "invalid_resolver",
+            "Resolver must be an HTTPS, QUIC, or socket endpoint",
+            "resolver",
+        ));
+    }
+    let started = Instant::now();
+    dns_relay::DnsResolver::new(dns_relay::ResolverConfig {
+        resolvers: vec![resolver],
+        relay: None,
+    })
+    .await
+    .map_err(|error| CommandError::new("resolver_unreachable", error.to_string()))?;
+    Ok(ProbeResult {
+        reachable: true,
+        message: "Resolver is reachable".into(),
+        latency_ms: started.elapsed().as_millis(),
+    })
 }
 
 #[tauri::command]
-pub fn test_relay(relay_url: String) -> Result<ProbeResult, CommandError> {
+pub async fn test_relay(relay_url: String) -> Result<ProbeResult, CommandError> {
     if !relay_url.starts_with("https://") {
         return Err(CommandError::field(
             "invalid_relay_url",
@@ -370,22 +387,139 @@ pub fn test_relay(relay_url: String) -> Result<ProbeResult, CommandError> {
             "relayUrl",
         ));
     }
-    Err(CommandError::new(
-        "probe_unavailable",
-        "Relay probes are not connected yet",
-    ))
+    let started = Instant::now();
+    let response = shared::build_http_client()
+        .map_err(|error| CommandError::new("relay_probe_failed", error.to_string()))?
+        .head(&relay_url)
+        .send()
+        .await
+        .map_err(|error| CommandError::new("relay_unreachable", error.to_string()))?;
+    Ok(ProbeResult {
+        reachable: true,
+        message: format!("Relay responded with {}", response.status()),
+        latency_ms: started.elapsed().as_millis(),
+    })
 }
 
 #[tauri::command]
 pub fn read_logs(limit: u16) -> Result<Vec<String>, CommandError> {
     validate_limit(limit)?;
-    Ok(Vec::new())
+    let paths = PlatformPaths::current().map_err(admin_error)?;
+    read_bounded_lines(
+        &[
+            paths.logs.join("dns-relay.out.log"),
+            paths.logs.join("dns-relay.err.log"),
+        ],
+        usize::from(limit),
+    )
 }
 
 #[tauri::command]
 pub fn read_history(limit: u16) -> Result<Vec<String>, CommandError> {
     validate_limit(limit)?;
-    Ok(Vec::new())
+    let paths = PlatformPaths::current().map_err(admin_error)?;
+    let history = paths
+        .config
+        .parent()
+        .ok_or_else(|| unavailable("history path"))?
+        .join("history.txt");
+    read_bounded_lines(&[history], usize::from(limit))
+}
+
+#[tauri::command]
+pub fn parse_config(config_toml: String) -> Result<Conf, CommandError> {
+    let config_toml = Zeroizing::new(config_toml);
+    reject_unknown_config_fields(&config_toml)?;
+    let mut draft: Conf = toml::from_str(&config_toml)
+        .map_err(|error| CommandError::new("invalid_config", error.to_string()))?;
+    if let Err(error) = require_valid_draft(&draft).and_then(|_| require_secret_references(&draft))
+    {
+        zeroize_materialized_secrets(&mut draft);
+        return Err(error);
+    }
+    Ok(draft)
+}
+
+#[tauri::command]
+pub fn parse_blocklist(content: String) -> Vec<String> {
+    shared::domain_trie::parse_blocklist(&content)
+}
+
+#[tauri::command]
+pub fn export_config(
+    state: State<'_, BackendState>,
+    draft: Conf,
+    plaintext: bool,
+) -> Result<String, CommandError> {
+    require_valid_draft(&draft)?;
+    if plaintext {
+        config_for_admin(&draft, state.secrets.as_ref())
+    } else {
+        require_secret_references(&draft)?;
+        draft
+            .to_toml()
+            .map_err(|error| CommandError::new("export_failed", error.to_string()))
+    }
+}
+
+#[tauri::command]
+pub async fn generate_secret(
+    state: State<'_, BackendState>,
+    kind: String,
+) -> Result<String, CommandError> {
+    if !matches!(kind.as_str(), "relay" | "obfs") {
+        return Err(CommandError::new(
+            "invalid_secret_kind",
+            "Unknown secret kind",
+        ));
+    }
+    let secrets = Arc::clone(&state.secrets);
+    tauri::async_runtime::spawn_blocking(move || {
+        let id = SecretId::new(format!("{kind}.{}", Uuid::new_v4()))
+            .map_err(|error| CommandError::new("secret_failed", error.to_string()))?;
+        let value = Zeroizing::new(dns_relay::generate_relay_key());
+        secrets
+            .put(&id, value.as_bytes())
+            .map_err(|error| CommandError::new("secret_failed", error.to_string()))?;
+        Ok(format!("vault://{}", id.as_str()))
+    })
+    .await
+    .map_err(|error| CommandError::new("secret_failed", error.to_string()))?
+}
+
+#[tauri::command]
+pub async fn reveal_secret(
+    state: State<'_, BackendState>,
+    reference: String,
+) -> Result<String, CommandError> {
+    let secrets = Arc::clone(&state.secrets);
+    tauri::async_runtime::spawn_blocking(move || {
+        let id = secret_id_from_reference(&reference)?;
+        let value = secrets
+            .get(&id)
+            .map_err(|error| CommandError::new("secret_unavailable", error.to_string()))?;
+        std::str::from_utf8(value.expose())
+            .map(str::to_owned)
+            .map_err(|_| CommandError::new("secret_encoding", "Secret is not UTF-8"))
+    })
+    .await
+    .map_err(|error| CommandError::new("secret_unavailable", error.to_string()))?
+}
+
+#[tauri::command]
+pub async fn delete_secret(
+    state: State<'_, BackendState>,
+    reference: String,
+) -> Result<(), CommandError> {
+    let secrets = Arc::clone(&state.secrets);
+    tauri::async_runtime::spawn_blocking(move || {
+        let id = secret_id_from_reference(&reference)?;
+        secrets
+            .delete(&id)
+            .map_err(|error| CommandError::new("secret_failed", error.to_string()))
+    })
+    .await
+    .map_err(|error| CommandError::new("secret_failed", error.to_string()))?
 }
 
 fn materialize_secrets(draft: &mut Conf, store: &impl SecretStore) -> Result<(), CommandError> {
@@ -688,6 +822,304 @@ pub(crate) fn current_service_state() -> Result<ServiceState, CommandError> {
             dns_relay_admin::apply::ServiceStatus::Stopped => ServiceState::Stopped,
         })
         .map_err(admin_error)
+}
+
+fn require_valid_draft(draft: &Conf) -> Result<(), CommandError> {
+    gui_validation_errors(draft)
+        .into_iter()
+        .next()
+        .map_or(Ok(()), Err)
+}
+
+fn gui_validation_errors(draft: &Conf) -> Vec<CommandError> {
+    let mut errors = Vec::new();
+    if let Err(error) = draft.validate() {
+        errors.push(CommandError::new("invalid_config", error.to_string()));
+    }
+    if draft.dns_target.parse::<SocketAddr>().is_err() {
+        errors.push(CommandError::field(
+            "invalid_listener",
+            "Listener must be an IP address and port",
+            "dnsTarget",
+        ));
+    }
+    for (index, resolver) in draft.resolvers.iter().enumerate() {
+        if !valid_resolver(resolver) {
+            errors.push(CommandError::field(
+                "invalid_resolver",
+                "Resolver must be an HTTPS, QUIC, or socket endpoint",
+                format!("resolvers.{index}"),
+            ));
+        }
+    }
+    for (index, rule) in draft.drop_list.iter().enumerate() {
+        if !is_file_reference(rule) && !valid_domain_pattern(rule) {
+            errors.push(CommandError::field(
+                "invalid_drop_rule",
+                "Drop rule must be a domain pattern or local list path",
+                format!("dropList.{index}"),
+            ));
+        }
+    }
+    for (index, (domain, target)) in draft.redirect_list.iter().enumerate() {
+        if is_file_reference(domain)
+            || !valid_domain_pattern(domain)
+            || !target.split(',').all(valid_redirect_target)
+        {
+            errors.push(CommandError::field(
+                "invalid_redirect_rule",
+                "Redirect rule must map a domain pattern to IP addresses",
+                format!("redirectList.{index}"),
+            ));
+        }
+    }
+    for (index, source) in draft.resolver_searching.resolver_source.iter().enumerate() {
+        if !source.starts_with("https://") || dns_relay::relay::host_from_url(source).is_err() {
+            errors.push(CommandError::field(
+                "invalid_resolver_source",
+                "Resolver discovery sources must use HTTPS",
+                format!("resolverSearching.resolverSource.{index}"),
+            ));
+        }
+    }
+    if draft.resolver_searching.resfresh_interval == Some(0) {
+        errors.push(CommandError::field(
+            "invalid_refresh_interval",
+            "Refresh interval must be greater than zero",
+            "resolverSearching.resfreshInterval",
+        ));
+    }
+    if draft.hotreload_conf.poll_interval_ms == 0 {
+        errors.push(CommandError::field(
+            "invalid_poll_interval",
+            "Hot reload interval must be greater than zero",
+            "hotreloadConf.pollIntervalMs",
+        ));
+    }
+    if draft.metric_conf.report_interval == 0 {
+        errors.push(CommandError::field(
+            "invalid_metric_interval",
+            "Metrics interval must be greater than zero",
+            "metricConf.reportInterval",
+        ));
+    }
+    if draft.relay_conf.relay_timeout_sec == 0 {
+        errors.push(CommandError::field(
+            "invalid_relay_timeout",
+            "Relay timeout must be greater than zero",
+            "relayConf.relayTimeoutSec",
+        ));
+    }
+    for (index, relay) in draft.relay_conf.relay_instances.iter().enumerate() {
+        if !relay.relay_url.starts_with("https://")
+            || dns_relay::relay::host_from_url(&relay.relay_url).is_err()
+        {
+            errors.push(CommandError::field(
+                "invalid_relay_url",
+                "Relay URL must use HTTPS",
+                format!("relayConf.relayInstances.{index}.relayUrl"),
+            ));
+        }
+        if draft.relay_conf.enable && secret_id_from_reference(&relay.relay_key).is_err() {
+            errors.push(CommandError::field(
+                "secret_reference_required",
+                "Enabled relays require a key stored in the credential vault",
+                format!("relayConf.relayInstances.{index}.relayKey"),
+            ));
+        }
+    }
+    if draft.obfs_conf.bind_addr.parse::<SocketAddr>().is_err() {
+        errors.push(CommandError::field(
+            "invalid_obfs_listener",
+            "Obfuscation listener must be an IP address and port",
+            "obfsConf.bindAddr",
+        ));
+    }
+    if draft.obfs_conf.enable && draft.obfs_conf.keys.is_empty() {
+        errors.push(CommandError::field(
+            "secret_reference_required",
+            "Enabled obfuscation requires at least one vault key",
+            "obfsConf.keys",
+        ));
+    }
+    if draft.obfs_conf.enable {
+        for (index, key) in draft.obfs_conf.keys.iter().enumerate() {
+            if secret_id_from_reference(key).is_err() {
+                errors.push(CommandError::field(
+                    "secret_reference_required",
+                    "Obfuscation keys must be stored in the credential vault",
+                    format!("obfsConf.keys.{index}"),
+                ));
+            }
+        }
+    }
+    if draft
+        .record_history_conf
+        .as_ref()
+        .is_some_and(|history| history.lines == 0)
+    {
+        errors.push(CommandError::field(
+            "invalid_history_lines",
+            "History line retention must be greater than zero",
+            "recordHistoryConf.lines",
+        ));
+    }
+    errors
+}
+
+fn valid_resolver(resolver: &str) -> bool {
+    if resolver.starts_with("https://") {
+        dns_relay::relay::host_from_url(resolver).is_ok()
+    } else if let Some(address) = resolver.strip_prefix("quic://") {
+        address.parse::<SocketAddr>().is_ok()
+    } else {
+        resolver.parse::<SocketAddr>().is_ok()
+    }
+}
+
+fn is_file_reference(value: &str) -> bool {
+    value.starts_with('/') || value.starts_with("./") || value.starts_with("../")
+}
+
+fn valid_domain_pattern(value: &str) -> bool {
+    let value = value.trim_end_matches('.');
+    !value.is_empty()
+        && value.contains('.')
+        && !value.contains("..")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'*'))
+}
+
+fn valid_redirect_target(value: &str) -> bool {
+    let value = value.trim();
+    value.parse::<IpAddr>().is_ok() || value.parse::<SocketAddr>().is_ok()
+}
+
+fn require_secret_references(draft: &Conf) -> Result<(), CommandError> {
+    for (index, relay) in draft.relay_conf.relay_instances.iter().enumerate() {
+        if !relay.relay_key.is_empty() {
+            secret_id_from_reference(&relay.relay_key).map_err(|_| {
+                CommandError::field(
+                    "secret_reference_required",
+                    "Imported secrets must use vault references",
+                    format!("relayConf.relayInstances.{index}.relayKey"),
+                )
+            })?;
+        }
+    }
+    for (index, key) in draft.obfs_conf.keys.iter().enumerate() {
+        secret_id_from_reference(key).map_err(|_| {
+            CommandError::field(
+                "secret_reference_required",
+                "Imported secrets must use vault references",
+                format!("obfsConf.keys.{index}"),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn reject_unknown_config_fields(config_toml: &str) -> Result<(), CommandError> {
+    let value: toml::Value = toml::from_str(config_toml)
+        .map_err(|error| CommandError::new("invalid_config", error.to_string()))?;
+    let mut fields = Vec::new();
+    collect_toml_leaf_paths(&value, "", &mut fields);
+    let registry: Vec<String> = serde_json::from_str(include_str!("../../src/config-fields.json"))
+        .map_err(|error| CommandError::new("field_registry_invalid", error.to_string()))?;
+    if let Some(field) = fields.iter().find(|field| !registry.contains(field)) {
+        Err(CommandError::field(
+            "unknown_config_field",
+            format!("Unknown configuration field: {field}"),
+            field,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn collect_toml_leaf_paths(value: &toml::Value, prefix: &str, output: &mut Vec<String>) {
+    match value {
+        toml::Value::Table(entries) => {
+            if entries.is_empty() && !prefix.is_empty() {
+                output.push(prefix.into());
+            }
+            for (key, value) in entries {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                collect_toml_leaf_paths(value, &path, output);
+            }
+        }
+        toml::Value::Array(entries) => {
+            let path = format!("{prefix}[]");
+            if entries.first().is_some_and(toml::Value::is_table) {
+                for entry in entries {
+                    collect_toml_leaf_paths(entry, &path, output);
+                }
+            } else {
+                output.push(path);
+            }
+        }
+        _ => output.push(prefix.into()),
+    }
+}
+
+fn secret_id_from_reference(reference: &str) -> Result<SecretId, CommandError> {
+    let id = reference.strip_prefix("vault://").ok_or_else(|| {
+        CommandError::new("secret_reference_required", "Expected a vault reference")
+    })?;
+    SecretId::new(id)
+        .map_err(|error| CommandError::new("invalid_secret_reference", error.to_string()))
+}
+
+const MAX_ACTIVITY_BYTES: u64 = 256 * 1024;
+
+pub(crate) fn read_bounded_lines(
+    paths: &[PathBuf],
+    limit: usize,
+) -> Result<Vec<String>, CommandError> {
+    let mut lines = Vec::new();
+    for path in paths {
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut file = match options.open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(CommandError::new("activity_unavailable", error.to_string())),
+        };
+        let metadata = file
+            .metadata()
+            .map_err(|error| CommandError::new("activity_unavailable", error.to_string()))?;
+        if !metadata.is_file() {
+            return Err(CommandError::new(
+                "activity_unavailable",
+                "Activity source is not a regular file",
+            ));
+        }
+        let start = metadata.len().saturating_sub(MAX_ACTIVITY_BYTES);
+        file.seek(SeekFrom::Start(start))
+            .map_err(|error| CommandError::new("activity_unavailable", error.to_string()))?;
+        let mut content = Vec::new();
+        file.take(MAX_ACTIVITY_BYTES)
+            .read_to_end(&mut content)
+            .map_err(|error| CommandError::new("activity_unavailable", error.to_string()))?;
+        let content = String::from_utf8_lossy(&content);
+        let mut source_lines = content.lines();
+        if start > 0 {
+            source_lines.next();
+        }
+        lines.extend(source_lines.map(str::to_owned));
+    }
+    let skip = lines.len().saturating_sub(limit);
+    Ok(lines.into_iter().skip(skip).collect())
 }
 
 fn validate_limit(limit: u16) -> Result<(), CommandError> {

@@ -33,9 +33,12 @@ use url::Url;
 type HmacSha256 = Hmac<Sha256>;
 
 pub fn gen_relay_key(_conf_path: &PathBuf) -> Result<(), Error> {
-    let key = Aes256Gcm::generate_key(OsRng);
-    println!("{}", STANDARD.encode(key));
+    println!("{}", generate_relay_key());
     Ok(())
+}
+
+pub fn generate_relay_key() -> String {
+    STANDARD.encode(Aes256Gcm::generate_key(OsRng))
 }
 
 pub fn encode_for_relay(key: &Key<Aes256Gcm>, dns_message: &[u8]) -> Vec<u8> {

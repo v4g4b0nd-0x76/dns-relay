@@ -135,6 +135,150 @@ test("production dialog restores focus and closes with Escape", async ({ page })
   await expect(trigger).toBeFocused();
 });
 
+test("resolver workflow preserves order, probes, and rejects insecure empty state", async ({ page }) => {
+  await openApp(page);
+  await page.locator("[data-target='resolvers']").click();
+  await page.getByRole("button", { name: "Add resolver" }).click();
+  const resolvers = page.locator("[data-config-path^='resolvers.']");
+  await expect(resolvers).toHaveCount(2);
+  await resolvers.nth(1).fill("quic://9.9.9.9:853");
+  await page.getByRole("button", { name: "Move resolver 2 up" }).click();
+  await expect(resolvers.nth(0)).toHaveValue("quic://9.9.9.9:853");
+  await page.getByRole("button", { name: "Test resolver 1" }).click();
+  await expect(page.getByText(/Resolver is reachable/)).toBeVisible();
+  await page.getByRole("button", { name: "Delete resolver 1" }).click();
+  await page.getByRole("button", { name: "Delete resolver 1" }).click();
+  await page.getByRole("button", { name: "Apply changes" }).click();
+  await expect(page.locator("[data-toast]")).toContainText("authenticated resolver");
+});
+
+test("rule workflow validates, creates, edits, deletes, and imports", async ({ page }) => {
+  await openApp(page);
+  await page.locator("[data-target='rules']").click();
+  await page.getByRole("button", { name: "Add rule" }).click();
+  await page.getByLabel("Domain pattern").fill("bad");
+  await page.getByLabel("Rule target").fill("999");
+  await page.getByRole("button", { name: "Save rule" }).click();
+  await expect(page.locator("[data-rule-error]")).toContainText("Enter a domain");
+  await page.getByLabel("Domain pattern").fill("ads.example");
+  await page.getByLabel("Rule target").fill("10.0.0.1");
+  await page.getByRole("button", { name: "Save rule" }).click();
+  await expect(page.getByText("ads.example", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Edit ads.example" }).click();
+  await page.getByLabel("Domain pattern").fill("tracker.example");
+  await page.getByRole("button", { name: "Save rule" }).click();
+  await page.getByRole("button", { name: "Delete tracker.example" }).click();
+  await expect(page.getByText("tracker.example", { exact: true })).toHaveCount(0);
+  await page.locator("[data-blocklist-import]").setInputFiles({ name: "block.txt", mimeType: "text/plain", buffer: Buffer.from("one.example\n# ignored\ntwo.example\n") });
+  await expect(page.getByText("one.example", { exact: true })).toBeVisible();
+});
+
+test("relay secrets stay vaulted and probes report latency", async ({ page }) => {
+  await openApp(page);
+  await page.locator("[data-target='relay']").click();
+  await page.getByRole("button", { name: "Add relay" }).click();
+  await page.getByLabel("HTTPS URL").fill("https://relay.example/dns-query");
+  await page.getByRole("button", { name: "Generate key" }).click();
+  await expect(page.locator("[data-toast]")).toContainText("stored in Keychain");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Reveal relay key" }).click();
+  await expect(page.getByText("fixture-secret-1", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Test relay" }).click();
+  await expect(page.getByText(/Relay responded with 200 OK/)).toBeVisible();
+  await page.getByRole("button", { name: "Mask relay key" }).click();
+  await page.getByRole("button", { name: "Apply changes" }).click();
+  await expect(page.locator("[data-toast]")).toContainText("applied");
+  await page.getByRole("button", { name: "Replace key" }).click();
+  await page.getByRole("button", { name: "Revert changes" }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Reveal relay key" }).click();
+  await expect(page.getByText("fixture-secret-1", { exact: true })).toBeVisible();
+});
+
+test("apply locks secret replacement before delayed validation", async ({ page }) => {
+  await page.setViewportSize({ width: 420, height: 720 });
+  await page.goto(`${production}/?fixture=validation-delay`);
+  await page.locator("[data-target='relay']").click();
+  await page.getByRole("button", { name: "Add relay" }).click();
+  await page.getByLabel("HTTPS URL").fill("https://relay.example/dns-query");
+  await page.getByRole("button", { name: "Generate key" }).click();
+  await page.getByRole("button", { name: "Apply changes" }).click();
+  await expect(page.locator("[data-dirty-bar]")).toBeHidden();
+
+  await page.getByLabel("HTTPS URL").fill("https://relay-two.example/dns-query");
+  await page.keyboard.press("Tab");
+  await page.getByRole("button", { name: "Apply changes" }).click();
+  await expect(page.locator("[data-view-host]")).toHaveAttribute("inert", "");
+  await page.getByRole("button", { name: "Replace key" }).click({ force: true });
+  await expect(page.locator("[data-dirty-bar]")).toBeHidden();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Reveal relay key" }).click();
+  await expect(page.getByText("fixture-secret-1", { exact: true })).toBeVisible();
+});
+
+test("replacing one shared generated reference keeps the other live", async ({ page }) => {
+  await openApp(page);
+  await page.locator("[data-target='relay']").click();
+  await page.getByRole("button", { name: "Add relay" }).click();
+  await page.getByRole("button", { name: "Generate key" }).click();
+  await page.locator("[data-target='settings']").click();
+  await page.getByLabel("Raw TOML").fill("fixture_duplicate_generated_secret = true");
+  await page.getByRole("button", { name: "Validate and use" }).click();
+  await page.locator("[data-target='relay']").click();
+  await page.getByRole("button", { name: "Replace key" }).first().click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Reveal relay key" }).nth(1).click();
+  await expect(page.getByText("fixture-secret-1", { exact: true })).toBeVisible();
+});
+
+test("first history edit creates a complete optional retention object", async ({ page }) => {
+  await openApp(page);
+  await page.locator("[data-target='settings']").click();
+  await page.getByLabel("History matched domains").fill("*.example");
+  await page.locator("[data-target='dashboard']").click();
+  await page.locator("[data-target='settings']").click();
+  await expect(page.getByLabel("History line retention")).toHaveValue("1000");
+  await page.getByRole("button", { name: "Revert changes" }).click();
+  await page.getByLabel("History line retention").fill("250");
+  await page.locator("[data-target='dashboard']").click();
+  await page.locator("[data-target='settings']").click();
+  await expect(page.getByLabel("History matched domains")).toHaveValue("");
+  await expect(page.getByLabel("History line retention")).toHaveValue("250");
+});
+
+test("activity sources filter, pause, export, and clear independently", async ({ page }) => {
+  await openApp(page);
+  await page.locator("[data-target='activity']").click();
+  await expect(page.getByText(/resolver ready/)).toBeVisible();
+  await page.getByLabel("Filter activity").fill("tracker");
+  await expect(page.getByText(/blocked tracker/)).toBeVisible();
+  await expect(page.getByText(/resolver ready/)).toHaveCount(0);
+  await page.getByRole("button", { name: "Pause" }).click();
+  await expect(page.getByRole("button", { name: "Resume" })).toBeVisible();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export" }).click();
+  await expect(await download).toBeTruthy();
+  await page.getByRole("button", { name: "Clear view" }).click();
+  await expect(page.getByText("No matching logs")).toBeVisible();
+});
+
+test("raw TOML validation and secret-free export remain explicit", async ({ page }) => {
+  await openApp(page);
+  await page.locator("[data-target='settings']").click();
+  await page.getByRole("button", { name: "Load draft" }).click();
+  await expect(page.getByLabel("Raw TOML")).toContainText("dns_target");
+  await page.getByLabel("Raw TOML").fill("invalid = true");
+  await page.getByRole("button", { name: "Validate and use" }).click();
+  await expect(page.getByRole("alert")).toContainText("invalid config");
+  await page.getByLabel("Raw TOML").fill("secure_only = false");
+  await page.getByRole("button", { name: "Validate and use" }).click();
+  await expect(page.locator("[data-toast]")).toContainText("valid");
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export safely" }).click();
+  await expect(await download).toBeTruthy();
+});
+
 for (const width of [420, 1024]) {
   test(`production navigation does not overlap at ${width}px`, async ({ page }) => {
     await openApp(page, width);

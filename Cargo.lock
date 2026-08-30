@@ -1208,6 +1208,7 @@ dependencies = [
  "dns_relay",
  "dns_relay_admin",
  "keyring",
+ "libc",
  "serde",
  "serde_json",
  "tauri",

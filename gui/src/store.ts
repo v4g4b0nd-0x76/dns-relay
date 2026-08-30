@@ -1,4 +1,4 @@
-import type { AppState, DnsRelayConfig, ObservabilitySnapshot, ViewId } from "./types";
+import type { AppState, DataState, DnsRelayConfig, ObservabilitySnapshot, ProbeResult, ViewId } from "./types";
 
 export interface ShellState {
   app: AppState;
@@ -7,7 +7,19 @@ export interface ShellState {
   activeView: ViewId;
   dirty: boolean;
   applying: boolean;
+  secretBusy: boolean;
   serviceRevision: number;
+  logs: DataState<string[]>;
+  history: DataState<string[]>;
+  resolverProbes: Record<string, DataState<ProbeResult>>;
+  relayProbes: Record<string, DataState<ProbeResult>>;
+  revealedSecrets: Record<string, string>;
+  generatedSecrets: string[];
+  pendingSecretDeletes: string[];
+  activityFilter: string;
+  activityPaused: boolean;
+  rawToml: string;
+  rawError?: string;
   fixtureState: "normal" | "loading" | "empty" | "warning" | "error";
 }
 
