@@ -697,8 +697,11 @@ fn request_admin_with_paths(
     let command = elevation_command(helper, id).inspect_err(|_| {
         let _ = fs::remove_file(paths.request_path(id));
     })?;
-    let status = Command::new(&command.program)
-        .args(&command.args)
+    let mut elevated = Command::new(&command.program);
+    elevated.args(&command.args);
+    #[cfg(target_os = "macos")]
+    elevated.current_dir("/");
+    let status = elevated
         .status()
         .inspect_err(|_| {
             let _ = fs::remove_file(paths.request_path(id));
