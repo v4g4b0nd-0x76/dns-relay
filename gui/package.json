@@ -3,15 +3,25 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "playwright test",
+    "tauri": "tauri",
     "vendor": "node scripts/vendor-lucide.mjs",
     "prototype:test": "playwright test tests/prototype.spec.mjs",
     "prototype:update-screenshots": "playwright test tests/prototype.spec.mjs --update-snapshots=all",
     "prototype:show": "playwright show-report"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "lucide": "^0.468.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.50.0"
+    "@playwright/test": "^1.50.0",
+    "@tauri-apps/cli": "^2.11.4",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
   }
 }

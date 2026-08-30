@@ -7,6 +7,7 @@ use std::{
 use std::env;
 
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::{AdminError, AdminRequest, AdminResponse};
 
@@ -40,20 +41,30 @@ impl PlatformPaths {
         read_request_at(&self.request_path(id), &self.request_dir, id)
     }
 
+    pub fn write_request(&self, request: &AdminRequest) -> Result<(), AdminError> {
+        fs::create_dir_all(&self.request_dir)?;
+        write_private_json(&self.request_path(request.id), request).map(|_| ())
+    }
+
+    pub fn read_response(&self, id: Uuid) -> Result<AdminResponse, AdminError> {
+        let path = self.response_path(id);
+        validate_message_path(&path, &self.response_dir, id)?;
+        let file = open_private_message(&path)?;
+        let response: AdminResponse = serde_json::from_reader(file)?;
+        if response.id != id {
+            return Err(AdminError::InvalidRequestFile(
+                "response body ID does not match its filename".into(),
+            ));
+        }
+        Ok(response)
+    }
+
     pub fn write_response(&self, response: &AdminResponse) -> Result<(), AdminError> {
         fs::create_dir_all(&self.response_dir)?;
-        let content = serde_json::to_vec(response)?;
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
+        let path = self.response_path(response.id);
+        let file = write_private_json(&path, response)?;
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        std::io::Write::write_all(
-            &mut options.open(self.response_path(response.id))?,
-            &content,
-        )?;
+        chown_to_invoking_user(&file)?;
         Ok(())
     }
 
@@ -80,22 +91,40 @@ pub(crate) fn read_request_at(
     expected_parent: &Path,
     expected_id: Uuid,
 ) -> Result<AdminRequest, AdminError> {
+    validate_message_path(path, expected_parent, expected_id)?;
+    let file = open_private_message(path)?;
+
+    let request: AdminRequest = serde_json::from_reader(file)?;
+    if request.id != expected_id {
+        return Err(AdminError::InvalidRequestFile(
+            "request body ID does not match its filename".into(),
+        ));
+    }
+    Ok(request)
+}
+
+fn validate_message_path(
+    path: &Path,
+    expected_parent: &Path,
+    expected_id: Uuid,
+) -> Result<(), AdminError> {
     let expected_name = format!("{expected_id}.json");
     if path.parent() != Some(expected_parent)
         || path.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str())
     {
         return Err(AdminError::InvalidRequestFile(
-            "request path is outside the fixed request directory".into(),
+            "message path is outside the fixed directory".into(),
         ));
     }
-
-    let link_metadata = fs::symlink_metadata(path)?;
-    if link_metadata.file_type().is_symlink() {
+    if fs::symlink_metadata(path)?.file_type().is_symlink() {
         return Err(AdminError::InvalidRequestFile(
-            "request file must not be a symlink".into(),
+            "message file must not be a symlink".into(),
         ));
     }
+    Ok(())
+}
 
+fn open_private_message(path: &Path) -> Result<fs::File, AdminError> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -107,19 +136,43 @@ pub(crate) fn read_request_at(
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(AdminError::InvalidRequestFile(
-            "request path must be a regular file".into(),
+            "message path must be a regular file".into(),
         ));
     }
     #[cfg(unix)]
     validate_unix_request(&metadata)?;
+    Ok(file)
+}
 
-    let request: AdminRequest = serde_json::from_reader(file)?;
-    if request.id != expected_id {
-        return Err(AdminError::InvalidRequestFile(
-            "request body ID does not match its filename".into(),
-        ));
+fn write_private_json(path: &Path, value: &impl serde::Serialize) -> Result<fs::File, AdminError> {
+    let content = Zeroizing::new(serde_json::to_vec(value)?);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    Ok(request)
+    let mut file = options.open(path)?;
+    std::io::Write::write_all(&mut file, &content)?;
+    file.sync_all()?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn chown_to_invoking_user(file: &fs::File) -> Result<(), AdminError> {
+    use std::os::fd::AsRawFd;
+
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(());
+    }
+    let result = unsafe { libc::fchown(file.as_raw_fd(), expected_request_owner()?, u32::MAX) };
+    if result == 0 {
+        file.sync_all()?;
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().into())
+    }
 }
 
 #[cfg(unix)]

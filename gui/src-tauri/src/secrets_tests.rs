@@ -14,7 +14,7 @@ use crate::{
 };
 
 #[derive(Default)]
-struct MemoryBackend {
+pub(crate) struct MemoryBackend {
     available: Cell<bool>,
     values: RefCell<BTreeMap<String, Vec<u8>>>,
 }

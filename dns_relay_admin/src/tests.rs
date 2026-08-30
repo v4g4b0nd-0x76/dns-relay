@@ -15,6 +15,7 @@ use crate::{
     apply::{CommandRunner, ServiceManager, ServiceStatus, apply_config, staging_path},
     parse_request_id,
     paths::read_request_at,
+    verify_sha256,
 };
 
 #[cfg(target_os = "macos")]
@@ -329,6 +330,47 @@ fn malformed_request_id_is_rejected() {
     assert!(parse_request_id("../request").is_err());
 }
 
+#[test]
+fn bundled_binary_hash_must_match_exact_sha256() {
+    let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    assert!(verify_sha256(b"abc", digest).is_ok());
+    assert!(verify_sha256(b"abc", "not-a-digest").is_err());
+    assert!(verify_sha256(b"changed", digest).is_err());
+}
+
+#[test]
+fn fixed_protocol_files_round_trip() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    let id = Uuid::parse_str(REQUEST_ID).unwrap();
+    let request = AdminRequest {
+        id,
+        action: AdminAction::Status,
+    };
+    paths.write_request(&request).unwrap();
+    assert_eq!(paths.read_request(id).unwrap().action, AdminAction::Status);
+
+    let response = crate::AdminResponse {
+        id,
+        ok: true,
+        message: "running".into(),
+    };
+    paths.write_response(&response).unwrap();
+    let decoded = paths.read_response(id).unwrap();
+    assert!(decoded.ok);
+    assert_eq!(decoded.message, "running");
+    #[cfg(unix)]
+    assert_eq!(
+        fs::metadata(paths.response_path(id))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn request_reader_rejects_symlinks_and_wrong_parent() {
@@ -462,6 +504,71 @@ impl ServiceManager for FakeService {
             Ok(())
         }
     }
+}
+
+impl crate::AdminService for FakeService {
+    fn install(&self, _config_toml: &str) -> Result<(), AdminError> {
+        self.start()
+    }
+
+    fn update(&self) -> Result<(), AdminError> {
+        self.restart()
+    }
+
+    fn uninstall(&self) -> Result<(), AdminError> {
+        self.stop()
+    }
+}
+
+#[test]
+fn admin_dispatch_maps_only_closed_service_actions() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    let service = FakeService::running();
+    let runner = FakeRunner::healthy();
+
+    assert_eq!(
+        crate::execute_action(AdminAction::Status, &paths, &service, &runner).unwrap(),
+        "running"
+    );
+    assert_eq!(
+        crate::execute_action(AdminAction::Stop, &paths, &service, &runner).unwrap(),
+        "stopped"
+    );
+    assert_eq!(service.state.get(), ServiceStatus::Stopped);
+    assert_eq!(
+        crate::execute_action(AdminAction::Start, &paths, &service, &runner).unwrap(),
+        "started"
+    );
+    assert_eq!(service.state.get(), ServiceStatus::Running);
+    assert_eq!(
+        crate::execute_action(AdminAction::Uninstall, &paths, &service, &runner).unwrap(),
+        "uninstalled"
+    );
+    assert_eq!(service.state.get(), ServiceStatus::Stopped);
+}
+
+#[test]
+fn apply_keeps_a_stopped_service_stopped() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    fs::create_dir_all(paths.config.parent().unwrap()).unwrap();
+    fs::write(&paths.config, "old").unwrap();
+    let service = FakeService::running();
+    service.stop().unwrap();
+
+    crate::execute_action(
+        AdminAction::ApplyConfig {
+            config_toml: VALID_CONFIG.into(),
+            restart: true,
+        },
+        &paths,
+        &service,
+        &FakeRunner::healthy(),
+    )
+    .unwrap();
+
+    assert_eq!(service.status().unwrap(), ServiceStatus::Stopped);
 }
 
 struct ApplyFixture {

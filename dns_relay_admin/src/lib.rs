@@ -3,11 +3,16 @@ mod paths;
 pub mod platform;
 pub mod process;
 
-use std::{fmt, fs, io};
+use std::{fmt, fs, io, path::Path};
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
+use zeroize::{Zeroize, Zeroizing};
+
+use apply::{CommandRunner, ServiceManager, ServiceStatus, apply_config};
+use process::SystemCommandRunner;
 
 pub use paths::PlatformPaths;
 
@@ -33,6 +38,17 @@ pub enum AdminAction {
         config_toml: String,
         restart: bool,
     },
+}
+
+impl AdminAction {
+    pub fn zeroize_sensitive(&mut self) {
+        match self {
+            Self::Install { config_toml, .. } | Self::ApplyConfig { config_toml, .. } => {
+                config_toml.zeroize();
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -111,17 +127,155 @@ pub fn run(cli: Cli) -> Result<(), AdminError> {
         Command::Request { request_id } => {
             let id = parse_request_id(&request_id)?;
             let paths = PlatformPaths::current()?;
-            paths.read_request(id)?;
+            let request = paths.read_request(id)?;
+            fs::remove_file(paths.request_path(id))?;
+            let result = dispatch(request.action, &paths);
             let response = AdminResponse {
                 id,
-                ok: false,
-                message: AdminError::Unsupported.to_string(),
+                ok: result.is_ok(),
+                message: result.unwrap_or_else(|error| error.to_string()),
             };
             paths.write_response(&response)?;
-            fs::remove_file(paths.request_path(id))?;
             Ok(())
         }
         Command::ServiceRun => Err(AdminError::Unsupported),
+    }
+}
+
+trait AdminService: ServiceManager {
+    fn install(&self, config_toml: &str) -> Result<(), AdminError>;
+    fn update(&self) -> Result<(), AdminError>;
+    fn uninstall(&self) -> Result<(), AdminError>;
+}
+
+#[cfg(target_os = "macos")]
+impl AdminService for platform::macos::MacosServiceManager {
+    fn install(&self, config_toml: &str) -> Result<(), AdminError> {
+        self.install(config_toml)
+    }
+
+    fn update(&self) -> Result<(), AdminError> {
+        self.update()
+    }
+
+    fn uninstall(&self) -> Result<(), AdminError> {
+        self.uninstall()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl AdminService for platform::linux::LinuxServiceManager {
+    fn install(&self, config_toml: &str) -> Result<(), AdminError> {
+        self.install(config_toml)
+    }
+
+    fn update(&self) -> Result<(), AdminError> {
+        self.update()
+    }
+
+    fn uninstall(&self) -> Result<(), AdminError> {
+        self.uninstall()
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn dispatch(action: AdminAction, paths: &PlatformPaths) -> Result<String, AdminError> {
+    #[cfg(target_os = "macos")]
+    let service = platform::macos::MacosServiceManager::new(paths.clone());
+    #[cfg(target_os = "linux")]
+    let service = platform::linux::LinuxServiceManager::new(paths.clone());
+    execute_action(action, paths, &service, &SystemCommandRunner)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn dispatch(_action: AdminAction, _paths: &PlatformPaths) -> Result<String, AdminError> {
+    Err(AdminError::Unsupported)
+}
+
+fn execute_action(
+    action: AdminAction,
+    paths: &PlatformPaths,
+    service: &impl AdminService,
+    runner: &impl CommandRunner,
+) -> Result<String, AdminError> {
+    match action {
+        AdminAction::Status => Ok(match service.status()? {
+            ServiceStatus::Running => "running",
+            ServiceStatus::Stopped => "stopped",
+        }
+        .into()),
+        AdminAction::Install {
+            config_toml,
+            expected_binary_sha256,
+        } => {
+            let config_toml = Zeroizing::new(config_toml);
+            verify_bundled_resolver(&expected_binary_sha256)?;
+            service.install(&config_toml)?;
+            Ok("installed".into())
+        }
+        AdminAction::Update {
+            expected_binary_sha256,
+        }
+        | AdminAction::Repair {
+            expected_binary_sha256,
+        } => {
+            verify_bundled_resolver(&expected_binary_sha256)?;
+            service.update()?;
+            Ok("updated".into())
+        }
+        AdminAction::Uninstall => {
+            service.uninstall()?;
+            Ok("uninstalled".into())
+        }
+        AdminAction::Start => {
+            service.start()?;
+            Ok("started".into())
+        }
+        AdminAction::Stop => {
+            service.stop()?;
+            Ok("stopped".into())
+        }
+        AdminAction::Restart => {
+            service.restart()?;
+            Ok("restarted".into())
+        }
+        AdminAction::ApplyConfig {
+            config_toml,
+            restart,
+        } => {
+            let config_toml = Zeroizing::new(config_toml);
+            apply_config(&config_toml, restart, paths, service, runner)?;
+            Ok("applied".into())
+        }
+    }
+}
+
+fn verify_bundled_resolver(expected: &str) -> Result<(), AdminError> {
+    let helper = std::env::current_exe()?;
+    let resolver = helper
+        .parent()
+        .ok_or_else(|| AdminError::Operation("admin helper path has no parent".into()))?
+        .join("dns_relay");
+    verify_sha256_file(&resolver, expected)
+}
+
+fn verify_sha256_file(path: &Path, expected: &str) -> Result<(), AdminError> {
+    verify_sha256(&fs::read(path)?, expected)
+}
+
+pub(crate) fn verify_sha256(content: &[u8], expected: &str) -> Result<(), AdminError> {
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(AdminError::Operation(
+            "expected binary SHA-256 is invalid".into(),
+        ));
+    }
+    let actual = format!("{:x}", Sha256::digest(content));
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(AdminError::Operation(
+            "bundled resolver SHA-256 does not match".into(),
+        ))
     }
 }
 
