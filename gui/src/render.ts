@@ -117,11 +117,11 @@ function renderDashboard(state: ShellState) {
   const service = state.applying ? "applying" : state.app.service;
   const running = service === "running";
   const stopped = service === "stopped" || service === "not_installed";
-  const action = running ? "Stop" : "Start";
+  const action = running || service === "error" ? "Stop" : "Start";
   const draft = state.app.draft;
   const metrics = state.observability.metrics.value;
   const health = !stopped && state.observability.health.value === true;
-  const healthLabel = stopped ? "Service stopped" : (health ? "Healthy" : "Health unavailable");
+  const healthLabel = stopped ? "Service stopped" : health ? "Healthy" : service === "error" ? "Service needs attention" : "Health unavailable";
   const cacheHit = metrics?.total_req
     ? `${Math.round((metrics.cached_count / metrics.total_req) * 100)}%`
     : "—";

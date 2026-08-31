@@ -26,6 +26,15 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": "all",
+    "externalBin": [
+      "binaries/dns_relay",
+      "binaries/dns_relay_admin"
+    ],
+    "icon": [
+      "icons/icon.png"
+    ],
+    "category": "Utility",
+    "shortDescription": "Install and manage the DNS Relay system service"
   }
 }

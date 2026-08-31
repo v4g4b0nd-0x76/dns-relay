@@ -1,7 +1,9 @@
 import { defineConfig, chromium } from "@playwright/test";
 import { existsSync } from "node:fs";
 
-const localChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const localChrome = process.platform === "darwin"
+  ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  : "/usr/bin/google-chrome";
 const useLocalChrome = !existsSync(chromium.executablePath()) && existsSync(localChrome);
 
 export default defineConfig({

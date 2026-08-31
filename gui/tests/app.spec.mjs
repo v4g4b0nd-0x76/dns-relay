@@ -119,6 +119,13 @@ test("production service control reports its final state", async ({ page }) => {
   await expect(page.locator("[data-live-region]")).toContainText("stopped");
 });
 
+test("failed service can be stopped from the power control", async ({ page }) => {
+  await page.setViewportSize({ width: 420, height: 720 });
+  await page.goto(`${production}/?fixture=service-error`);
+  await page.getByRole("button", { name: "Stop DNS Relay" }).click();
+  await expect(page.locator("[data-service-state]")).toHaveText("Stopped");
+});
+
 test("production draft can be reverted or applied", async ({ page }) => {
   await openApp(page);
   await page.locator("[data-target='resolvers']").click();

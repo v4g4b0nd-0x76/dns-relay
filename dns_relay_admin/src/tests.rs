@@ -8,7 +8,10 @@ use uuid::Uuid;
 #[cfg(unix)]
 use crate::platform::{
     CommandSpec,
-    linux::{LinuxServiceManager, elevation_command_for, linux_invoking_uid_from},
+    linux::{
+        LinuxServiceManager, elevation_command_for, linux_invoking_uid_from,
+        systemctl_service_status,
+    },
 };
 use crate::{
     AdminAction, AdminError, AdminRequest, PlatformPaths,
@@ -91,11 +94,22 @@ fn linux_systemctl_commands_are_closed_and_exact() {
     );
     assert_eq!(
         linux.status_command(),
-        CommandSpec::new(
-            "/usr/bin/systemctl",
-            ["is-active", "--quiet", "dns-relay-gui.service"]
-        )
+        CommandSpec::new("/usr/bin/systemctl", ["is-active", "dns-relay-gui.service"])
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn linux_restart_loop_is_not_reported_as_stopped() {
+    assert_eq!(
+        systemctl_service_status(true, "active\n", "").unwrap(),
+        ServiceStatus::Running
+    );
+    assert_eq!(
+        systemctl_service_status(false, "inactive\n", "").unwrap(),
+        ServiceStatus::Stopped
+    );
+    assert!(systemctl_service_status(false, "activating\n", "").is_err());
 }
 
 #[test]
@@ -261,10 +275,9 @@ fn macos_launchd_status_requires_a_running_job() {
         launchctl_service_status(true, "state = running\n", "").unwrap(),
         ServiceStatus::Running
     );
-    assert_eq!(
+    assert!(
         launchctl_service_status(true, "state = spawn scheduled\nlast exit code = 1\n", "")
-            .unwrap(),
-        ServiceStatus::Stopped
+            .is_err()
     );
     assert_eq!(
         launchctl_service_status(false, "", "Could not find service").unwrap(),

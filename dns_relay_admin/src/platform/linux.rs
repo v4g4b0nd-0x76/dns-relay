@@ -48,7 +48,7 @@ impl LinuxServiceManager {
     }
 
     pub fn status_command(&self) -> CommandSpec {
-        CommandSpec::new(SYSTEMCTL, ["is-active", "--quiet", SERVICE])
+        CommandSpec::new(SYSTEMCTL, ["is-active", SERVICE])
     }
 
     pub(crate) fn install_payload(
@@ -125,11 +125,15 @@ impl LinuxServiceManager {
 
 impl ServiceManager for LinuxServiceManager {
     fn status(&self) -> Result<ServiceStatus, AdminError> {
-        Ok(if succeeds(&self.status_command())? {
-            ServiceStatus::Running
-        } else {
-            ServiceStatus::Stopped
-        })
+        let command = self.status_command();
+        let output = Command::new(&command.program)
+            .args(&command.args)
+            .output()?;
+        systemctl_service_status(
+            output.status.success(),
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        )
     }
 
     fn start(&self) -> Result<(), AdminError> {
@@ -142,6 +146,23 @@ impl ServiceManager for LinuxServiceManager {
 
     fn restart(&self) -> Result<(), AdminError> {
         run(&self.restart_command())
+    }
+}
+
+pub(crate) fn systemctl_service_status(
+    success: bool,
+    output: &str,
+    error: &str,
+) -> Result<ServiceStatus, AdminError> {
+    let state = output.trim();
+    match state {
+        "active" if success => Ok(ServiceStatus::Running),
+        "inactive" | "failed" | "unknown" => Ok(ServiceStatus::Stopped),
+        _ => Err(AdminError::Operation(if error.trim().is_empty() {
+            format!("systemd service is {state}")
+        } else {
+            error.trim().to_owned()
+        })),
     }
 }
 

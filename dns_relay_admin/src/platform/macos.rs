@@ -174,6 +174,11 @@ pub(crate) fn launchctl_service_status(
     if success && output.lines().any(|line| line.trim() == "state = running") {
         return Ok(ServiceStatus::Running);
     }
+    if success && output.contains("state = spawn scheduled") {
+        return Err(AdminError::Operation(
+            "launchd service is repeatedly restarting".into(),
+        ));
+    }
     if success || error.contains("Could not find service") {
         return Ok(ServiceStatus::Stopped);
     }

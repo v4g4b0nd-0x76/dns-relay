@@ -69,7 +69,7 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
   }, true);
 
   async function toggleService() {
-    await runServiceAction(store.get().app.service === "running" ? "stop" : "start");
+    await runServiceAction(["running", "error"].includes(store.get().app.service) ? "stop" : "start");
   }
 
   async function runServiceAction(action: "start" | "stop" | "restart" | "repair" | "uninstall") {
