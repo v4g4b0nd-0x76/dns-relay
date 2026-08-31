@@ -12,7 +12,7 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
     if (!button) return;
     const action = button.dataset.action;
-    if (action === "navigate") store.update((state) => { state.activeView = button.dataset.target as ViewId; });
+    if (action === "navigate") store.update((state) => { state.activeView = (button.dataset.viewTarget ?? button.dataset.target) as ViewId; });
     if (action === "fixture-state") store.update((state) => { state.fixtureState = button.dataset.state as typeof state.fixtureState; });
     if (action === "toggle-service") await toggleService();
     if (action === "service-action") await runServiceAction(button.dataset.serviceAction as "restart" | "repair" | "uninstall");

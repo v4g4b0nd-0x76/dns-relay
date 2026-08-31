@@ -987,7 +987,7 @@ async fn auto_flushes_once_capacity_is_reached() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 
     let data = read_history(file.path()).await;

@@ -7,7 +7,7 @@ use std::{
 
 use crate::{AdminError, PlatformPaths};
 
-const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServiceStatus {

@@ -11,6 +11,7 @@ use crate::{
 
 const SERVICE: &str = "dns-relay-gui.service";
 const SYSTEMCTL: &str = "/usr/bin/systemctl";
+const JOURNALCTL: &str = "/usr/bin/journalctl";
 const UNIT: &[u8] = include_bytes!("../../../assets/gui/dns-relay-gui.service");
 const POLICY: &[u8] = include_bytes!("../../../assets/gui/com.dns-relay.gui.policy");
 
@@ -49,6 +50,41 @@ impl LinuxServiceManager {
 
     pub fn status_command(&self) -> CommandSpec {
         CommandSpec::new(SYSTEMCTL, ["is-active", SERVICE])
+    }
+
+    pub fn show_command(&self) -> CommandSpec {
+        CommandSpec::new(
+            SYSTEMCTL,
+            [
+                "show",
+                SERVICE,
+                "-p",
+                "ActiveState",
+                "-p",
+                "SubState",
+                "-p",
+                "Result",
+                "-p",
+                "NRestarts",
+                "-p",
+                "ExecMainCode",
+                "-p",
+                "ExecMainStatus",
+                "--no-pager",
+            ],
+        )
+    }
+
+    pub fn journal_command(&self) -> CommandSpec {
+        CommandSpec::new(JOURNALCTL, ["-u", SERVICE, "-n", "80", "--no-pager"])
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn diagnostics(&self) -> Option<String> {
+        linux_service_diagnostics(
+            &command_output(&self.show_command()),
+            &command_output(&self.journal_command()),
+        )
     }
 
     pub(crate) fn install_payload(
@@ -166,6 +202,22 @@ pub(crate) fn systemctl_service_status(
     }
 }
 
+pub(crate) fn linux_service_diagnostics(show: &str, journal: &str) -> Option<String> {
+    let show = show.trim();
+    let journal = journal.trim();
+    if show.is_empty() && journal.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if !show.is_empty() {
+        parts.push(format!("systemctl show {SERVICE}:\n{show}"));
+    }
+    if !journal.is_empty() {
+        parts.push(format!("journalctl -u {SERVICE}:\n{journal}"));
+    }
+    Some(parts.join("\n\n"))
+}
+
 pub fn elevation_command(helper: &Path, request_id: &str) -> Result<CommandSpec, AdminError> {
     elevation_command_for(helper, request_id, Path::new("/usr/bin/pkexec").is_file())
 }
@@ -230,6 +282,22 @@ fn run(command: &CommandSpec) -> Result<(), AdminError> {
             "{} failed",
             command.program.display()
         )))
+    }
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn command_output(command: &CommandSpec) -> String {
+    match Command::new(&command.program).args(&command.args).output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            [stdout.trim(), stderr.trim()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        Err(error) => error.to_string(),
     }
 }
 

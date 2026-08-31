@@ -110,6 +110,109 @@ test("production shell exposes the six operational views", async ({ page }) => {
   await expect(page.locator("[data-view='settings']")).toBeVisible();
 });
 
+test("desktop shell uses the available window width", async ({ page }) => {
+  await openApp(page, 1440);
+  const shell = await page.locator("[data-app-shell]").boundingBox();
+
+  expect(shell).not.toBeNull();
+  expect(shell.width).toBeGreaterThan(1360);
+  expect(shell.x).toBeLessThan(4);
+});
+
+test("wide desktop content starts near the navigation rail", async ({ page }) => {
+  await openApp(page, 1920);
+  const view = await page.locator("[data-view='dashboard']").boundingBox();
+
+  expect(view).not.toBeNull();
+  expect(view.x).toBeLessThan(180);
+});
+
+test("boolean config fields render as app switches", async ({ page }) => {
+  await openApp(page);
+  await page.locator("[data-target='settings']").click();
+
+  const checkboxCount = await page.locator(".check-row input[type='checkbox']").count();
+  await expect(page.locator(".check-row .switch")).toHaveCount(checkboxCount);
+});
+
+test("compact dashboard keeps service facts readable", async ({ page }) => {
+  await openApp(page);
+
+  const narrowFacts = await page.locator(".detail-list > div").evaluateAll((items) =>
+    items
+      .map((item) => item.getBoundingClientRect().width)
+      .filter((width) => width < 130),
+  );
+
+  expect(narrowFacts).toEqual([]);
+});
+
+test("desktop forms have breathing room inside cards", async ({ page }) => {
+  await openApp(page, 1440);
+  await page.locator("[data-target='relay']").click();
+
+  const spacing = await page.locator("[data-view='relay'] .card.form-grid").first().evaluate((card) => {
+    const cardStyle = getComputedStyle(card);
+    const formStyle = getComputedStyle(card);
+    return {
+      padding: Number.parseFloat(cardStyle.paddingTop),
+      rowGap: Number.parseFloat(formStyle.rowGap),
+      columnGap: Number.parseFloat(formStyle.columnGap),
+    };
+  });
+
+  expect(spacing.padding).toBeGreaterThanOrEqual(22);
+  expect(spacing.rowGap).toBeGreaterThanOrEqual(18);
+  expect(spacing.columnGap).toBeGreaterThanOrEqual(18);
+});
+
+test("file action buttons do not stretch across toolbars", async ({ page }) => {
+  await openApp(page, 1440);
+  await page.locator("[data-target='rules']").click();
+
+  const addButton = await page.getByRole("button", { name: "Add rule" }).boundingBox();
+  const importButton = await page.getByText("Import blocklist", { exact: true }).boundingBox();
+
+  expect(addButton).not.toBeNull();
+  expect(importButton).not.toBeNull();
+  expect(importButton.width).toBeLessThan(220);
+  expect(importButton.x - (addButton.x + addButton.width)).toBeLessThan(24);
+});
+
+test("empty operational views are actionable", async ({ page }) => {
+  await openApp(page, 1440);
+
+  await expect(page.getByRole("button", { name: "Open activity" })).toBeVisible();
+  await page.getByRole("button", { name: "Open activity" }).click();
+  await expect(page.locator("[data-view='activity']")).toBeVisible();
+  await page.locator("[data-target='rules']").click();
+  await expect(page.getByText("No rules yet", { exact: true })).toBeVisible();
+  await page.locator("[data-target='relay']").click();
+  await expect(page.getByText("No relay endpoints", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add relay" })).toBeVisible();
+});
+
+test("dashboard activity preview stays compact", async ({ page }) => {
+  await openApp(page, 1440);
+
+  const preview = await page.locator("[data-dashboard-activity]").boundingBox();
+
+  expect(preview).not.toBeNull();
+  expect(preview.height).toBeLessThan(180);
+});
+
+test("settings listener field uses a full row", async ({ page }) => {
+  await openApp(page, 1440);
+  await page.locator("[data-target='settings']").click();
+
+  const card = await page.locator("[data-settings-core]").boundingBox();
+  const listener = await page.getByLabel("Listener address").boundingBox();
+
+  expect(card).not.toBeNull();
+  expect(listener).not.toBeNull();
+  expect(listener.width).toBeGreaterThan(card.width * 0.8);
+});
+
 test("production service control reports its final state", async ({ page }) => {
   await openApp(page);
   await page.getByRole("button", { name: "Start DNS Relay" }).click();

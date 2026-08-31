@@ -131,12 +131,16 @@ function renderDashboard(state: ShellState) {
     ${state.observability.metrics.error && (!stopped || state.observability.metrics.errorKind !== "connection_refused") ? `<div class="notice warning">Metrics unavailable: ${escapeHtml(state.observability.metrics.error)}</div>` : ""}
     <div class="card hero"><button class="power-button" data-power data-state="${service}" data-action="toggle-service" data-focus="power" aria-label="${action} DNS Relay" title="${action} DNS Relay" ${state.applying || service === "not_installed" ? "disabled" : ""}><i data-lucide="power"></i></button><div><p class="eyebrow">Service status</p><h2 class="service-title" data-service-state>${title(service)}</h2><span class="${health ? "healthy" : "muted"}">${healthLabel}</span><div class="detail-list"><div><span>Listener</span><strong>${escapeHtml(draft?.dns_target ?? "Unavailable")}</strong></div><div><span>Mode</span><strong>${draft?.secure_only ? "Secure only" : "Standard"}</strong></div><div><span>Transport</span><strong>Configured upstreams</strong></div><div><span>Changes</span><strong>${state.dirty ? "Pending" : "Saved"}</strong></div></div></div></div>
     <div class="metrics">${metric("Requests", metrics?.total_req.toLocaleString() ?? "—", "arrow-up-right")}${metric("Cache hit", cacheHit, "database")}${metric("Failures", metrics?.failed_count.toLocaleString() ?? "—", "triangle-alert")}${metric("Timeouts", metrics?.timeout_count.toLocaleString() ?? "—", "timer")}</div>
-    <div class="card empty-state">Recent events connect with bounded platform logs in the configuration checkpoint.</div>
+    <div class="card activity-preview" data-dashboard-activity>${emptyState("activity", "No recent events", "Service logs and query history will appear here once DNS Relay starts.", '<button class="button" data-action="navigate" data-view-target="activity">Open activity</button>')}</div>
   </section>`;
 }
 
 function metric(label: string, value: string, icon: string) {
   return `<div class="metric"><div class="metric-head"><small>${label}</small><i data-lucide="${icon}"></i></div><strong>${value}</strong></div>`;
+}
+
+function emptyState(icon: string, title: string, detail: string, action = "") {
+  return `<div class="empty-state"><i data-lucide="${icon}"></i><strong>${title}</strong><span>${detail}</span>${action}</div>`;
 }
 
 function renderResolvers(state: ShellState) {
@@ -147,7 +151,7 @@ function renderResolvers(state: ShellState) {
     <div class="card">${resolvers.length ? resolvers.map((resolver, index) => {
       const probe = state.resolverProbes[resolver];
       return `<div class="row"><span class="badge transport">${resolverTransport(resolver)}</span><div class="row-main"><label><span class="sr-only">Resolver ${index + 1}</span><input data-config-path="resolvers.${index}" value="${escapeHtml(resolver)}"></label><span class="${probe?.value?.reachable ? "healthy" : "muted"}">${probe?.error ? escapeHtml(probe.error) : probe?.value ? `${escapeHtml(probe.value.message)} · ${probe.value.latencyMs} ms` : "Configured upstream"}</span></div><div class="row-actions">${iconAction("arrow-up", `Move resolver ${index + 1} up`, "move-resolver", `data-index="${index}" data-direction="-1" ${index === 0 ? "disabled" : ""}`)}${iconAction("arrow-down", `Move resolver ${index + 1} down`, "move-resolver", `data-index="${index}" data-direction="1" ${index === resolvers.length - 1 ? "disabled" : ""}`)}${iconAction("flask-conical", `Test resolver ${index + 1}`, "test-resolver", `data-index="${index}"`)}${iconAction("trash-2", `Delete resolver ${index + 1}`, "delete-resolver", `data-index="${index}"`)}</div></div>`;
-    }).join("") : '<div class="empty-state">No resolvers configured</div>'}</div>
+    }).join("") : emptyState("network", "No resolvers configured", "Add a UDP, DoH, or DoQ upstream to start resolving.")}</div>
     <div class="card form-grid">
       ${checkField("Enable resolver discovery", "resolver_searching.enable", draft?.resolver_searching.enable)}
       <label>Discovery sources<textarea data-config-path="resolver_searching.resolver_source" data-value-type="lines">${escapeHtml(draft?.resolver_searching.resolver_source.join("\n") ?? "")}</textarea></label>
@@ -172,7 +176,7 @@ function renderRules(state: ShellState) {
   ];
   return `<section class="view" data-view="rules">${heading("Policy", "Rules", `${drops.length} drop · ${redirects.length} redirect`)}
     <div class="toolbar"><button class="button primary" data-action="open-dialog"><i data-lucide="plus"></i> Add rule</button><label class="button">Import blocklist<input class="sr-only" type="file" accept="text/plain" data-blocklist-import></label></div>
-    <div class="card">${rows.length ? rows.map((rule) => `<div class="row"><span class="badge transport">${rule.kind === "drop" ? "DROP" : "DNS"}</span><div class="row-main"><strong>${escapeHtml(rule.domain)}</strong><span>${escapeHtml(rule.target)}</span></div><div class="row-actions">${iconAction("settings", `Edit ${rule.domain}`, "edit-rule", `data-kind="${rule.kind}" data-index="${rule.index}"`)}${iconAction("trash-2", `Delete ${rule.domain}`, "delete-rule", `data-kind="${rule.kind}" data-index="${rule.index}"`)}</div></div>`).join("") : '<div class="empty-state">No rules configured</div>'}</div>
+    <div class="card">${rows.length ? rows.map((rule) => `<div class="row"><span class="badge transport">${rule.kind === "drop" ? "DROP" : "DNS"}</span><div class="row-main"><strong>${escapeHtml(rule.domain)}</strong><span>${escapeHtml(rule.target)}</span></div><div class="row-actions">${iconAction("settings", `Edit ${rule.domain}`, "edit-rule", `data-kind="${rule.kind}" data-index="${rule.index}"`)}${iconAction("trash-2", `Delete ${rule.domain}`, "delete-rule", `data-kind="${rule.kind}" data-index="${rule.index}"`)}</div></div>`).join("") : emptyState("shield-ban", "No rules yet", "Add a drop or redirect rule, or import a plain-text blocklist.")}</div>
     <p class="muted">Drop lists may be imported. Redirect rules remain inline-only.</p>
   </section>`;
 }
@@ -180,14 +184,15 @@ function renderRules(state: ShellState) {
 function renderRelay(state: ShellState) {
   const draft = state.app.draft;
   const relay = draft?.relay_conf;
+  const instances = relay?.relay_instances ?? [];
   return `<section class="view" data-view="relay">${heading("Transport", "Relay", "Direct and Google-chained HTTPS relays")}
     <div class="card form-grid">${checkField("Enable relay", "relay_conf.enable", relay?.enable)}${checkField("Manual bootstrap", "relay_conf.resolve_manual", relay?.resolve_manual)}<label>Timeout (seconds)<input type="number" min="1" data-config-path="relay_conf.relay_timeout_sec" data-value-type="number" value="${relay?.relay_timeout_sec ?? 5}"></label><label>Client subnet<input data-config-path="client_subnet" data-value-type="optional-string" value="${escapeHtml(draft?.client_subnet ?? "")}" placeholder="Auto"></label></div>
-    ${(relay?.relay_instances ?? []).map((item, index) => {
+    ${instances.length ? instances.map((item, index) => {
       const probe = state.relayProbes[item.relay_url];
       const revealed = state.revealedSecrets[item.relay_key];
       return `<div class="card"><div class="section-heading"><div><p class="eyebrow">Relay ${index + 1}</p><h2>${escapeHtml(item.relay_url || "New relay")}</h2></div>${iconAction("trash-2", `Delete relay ${index + 1}`, "delete-relay", `data-index="${index}"`)}</div><div class="form-grid"><label>HTTPS URL<input data-config-path="relay_conf.relay_instances.${index}.relay_url" value="${escapeHtml(item.relay_url)}"></label><label>Transport<select data-config-path="relay_conf.relay_instances.${index}.transport"><option value="direct" ${item.transport === "direct" ? "selected" : ""}>Direct</option><option value="google_chained" ${item.transport === "google_chained" ? "selected" : ""}>Google chained</option></select></label><label>Vault<select disabled><option>System keychain</option></select></label></div><div class="secret-line"><span class="secret-value">${revealed ? escapeHtml(revealed) : item.relay_key ? "••••••••••••" : "Not configured"}</span><div class="row-actions">${iconAction(revealed ? "eye-off" : "eye", revealed ? "Mask relay key" : "Reveal relay key", "reveal-relay-secret", `data-index="${index}" ${item.relay_key ? "" : "disabled"}`)}<button class="button" data-action="generate-relay-secret" data-index="${index}">${item.relay_key ? "Replace key" : "Generate key"}</button><button class="button" data-action="test-relay" data-index="${index}">Test relay</button></div></div><p class="${probe?.value?.reachable ? "healthy" : "muted"}">${probe?.error ? escapeHtml(probe.error) : probe?.value ? `${escapeHtml(probe.value.message)} · ${probe.value.latencyMs} ms` : "Not tested"}</p></div>`;
-    }).join("")}
-    <button class="button" data-action="add-relay"><i data-lucide="plus"></i> Add relay</button><p class="muted">Secrets stay in Keychain and are materialized only during Apply.</p>
+    }).join("") : `<div class="card">${emptyState("route", "No relay endpoints", "Add a relay endpoint when you need chained HTTPS transport.", '<button class="button" data-action="add-relay"><i data-lucide="plus"></i> Add relay</button>')}</div>`}
+    ${instances.length ? '<button class="button" data-action="add-relay"><i data-lucide="plus"></i> Add relay</button>' : ""}<p class="muted">Secrets stay in Keychain and are materialized only during Apply.</p>
   </section>`;
 }
 
@@ -214,7 +219,7 @@ function renderSettings(state: ShellState) {
   const history = draft?.record_history_conf;
   const obfs = draft?.obfs_conf;
   return `<section class="view" data-view="settings">${heading("System", "Settings", "Listener, service, updates, and complete configuration")}${renderWarnings(state)}
-    <div class="card form-grid"><label>Listener address<input data-config-path="dns_target" value="${escapeHtml(draft?.dns_target ?? "")}"></label>${checkField("Hot reload", "hotreload_conf.enable", draft?.hotreload_conf.enable)}<label>Hot reload interval (ms)<input type="number" min="1" data-config-path="hotreload_conf.poll_interval_ms" data-value-type="number" value="${draft?.hotreload_conf.poll_interval_ms ?? 1000}"></label>${checkField("VPN DNS reassertion", "vpn_reassertion", draft?.vpn_reassertion)}${checkField("Initialize TLS roots", "init_tls", draft?.init_tls)}</div>
+    <div class="card form-grid" data-settings-core><label class="span-2">Listener address<input data-config-path="dns_target" value="${escapeHtml(draft?.dns_target ?? "")}"></label>${checkField("Hot reload", "hotreload_conf.enable", draft?.hotreload_conf.enable)}<label>Hot reload interval (ms)<input type="number" min="1" data-config-path="hotreload_conf.poll_interval_ms" data-value-type="number" value="${draft?.hotreload_conf.poll_interval_ms ?? 1000}"></label>${checkField("VPN DNS reassertion", "vpn_reassertion", draft?.vpn_reassertion)}${checkField("Initialize TLS roots", "init_tls", draft?.init_tls)}</div>
     <div class="card form-grid"><p class="eyebrow">Metrics and history</p>${checkField("Metrics endpoint", "metric_conf.enable", draft?.metric_conf.enable)}<label>Metrics output<select data-config-path="metric_conf.report_type"><option value="log" ${draft?.metric_conf.report_type === "log" ? "selected" : ""}>Log</option><option value="http" ${draft?.metric_conf.report_type === "http" ? "selected" : ""}>HTTP</option></select></label><label>Metrics interval (seconds)<input type="number" min="1" data-config-path="metric_conf.report_interval" data-value-type="number" value="${draft?.metric_conf.report_interval ?? 30}"></label>${checkField("Record query history", "record_history", draft?.record_history)}<label>History matched domains<textarea data-config-path="record_history_conf.matched_list" data-value-type="lines">${escapeHtml(history?.matched_list.join("\n") ?? "")}</textarea></label><label>History line retention<input type="number" min="1" data-config-path="record_history_conf.lines" data-value-type="number" value="${history?.lines ?? 1000}"></label></div>
     <div class="card form-grid"><p class="eyebrow">Obfuscated listener</p>${checkField("Enable obfuscation", "obfs_conf.enable", obfs?.enable)}<label>Bind address<input data-config-path="obfs_conf.bind_addr" value="${escapeHtml(obfs?.bind_addr ?? "")}"></label><div><span class="muted">Keys</span>${(obfs?.keys ?? []).map((key, index) => `<div class="secret-line"><span>${state.revealedSecrets[key] ? escapeHtml(state.revealedSecrets[key]) : "••••••••••••"}</span><div class="row-actions">${iconAction(state.revealedSecrets[key] ? "eye-off" : "eye", `Reveal obfuscation key ${index + 1}`, "reveal-obfs-secret", `data-index="${index}"`)}${iconAction("trash-2", `Delete obfuscation key ${index + 1}`, "delete-obfs-secret", `data-index="${index}"`)}</div></div>`).join("")}<button class="button" data-action="generate-obfs-secret">Generate obfuscation key</button></div></div>
     <div class="card"><div class="section-heading"><div><p class="eyebrow">Service</p><h2>${title(state.app.service)}</h2></div></div><div class="toolbar"><button class="button" data-action="service-action" data-service-action="restart">Restart</button><button class="button" data-action="service-action" data-service-action="repair">Repair</button><button class="button danger-button" data-action="service-action" data-service-action="uninstall">Uninstall</button></div></div>
@@ -246,7 +251,7 @@ function resolverTransport(resolver: string) {
 }
 
 function checkField(label: string, path: string, checked?: boolean, disabled = false) {
-  return `<label class="check-row">${label}<input type="checkbox" data-config-path="${path}" data-focus="${path}" data-value-type="boolean" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}></label>`;
+  return `<label class="check-row"><span>${label}</span><span class="switch"><input type="checkbox" data-config-path="${path}" data-focus="${path}" data-value-type="boolean" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}><span aria-hidden="true"></span></span></label>`;
 }
 
 function title(value: string) {

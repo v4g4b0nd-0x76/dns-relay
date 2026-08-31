@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
-use apply::{CommandRunner, ServiceManager, ServiceStatus, apply_config};
+use apply::{CommandRunner, HEALTH_TIMEOUT, ServiceManager, ServiceStatus, apply_config};
 use process::SystemCommandRunner;
 
 pub use paths::PlatformPaths;
@@ -157,6 +157,9 @@ trait AdminService: ServiceManager {
     fn update(&self) -> Result<(), AdminError>;
     fn repair(&self, config_toml: &str) -> Result<(), AdminError>;
     fn uninstall(&self) -> Result<(), AdminError>;
+    fn diagnostics(&self) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -195,6 +198,10 @@ impl AdminService for platform::linux::LinuxServiceManager {
     fn uninstall(&self) -> Result<(), AdminError> {
         self.uninstall()
     }
+
+    fn diagnostics(&self) -> Option<String> {
+        platform::linux::LinuxServiceManager::diagnostics(self)
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -230,14 +237,20 @@ fn execute_action(
         } => {
             let config_toml = Zeroizing::new(config_toml);
             verify_bundled_resolver(&expected_binary_sha256)?;
-            service.install(&config_toml)?;
+            service
+                .install(&config_toml)
+                .map_err(|error| service_error(error, service))?;
+            wait_for_service_health(service, runner)?;
             Ok("installed".into())
         }
         AdminAction::Update {
             expected_binary_sha256,
         } => {
             verify_bundled_resolver(&expected_binary_sha256)?;
-            service.update()?;
+            service
+                .update()
+                .map_err(|error| service_error(error, service))?;
+            wait_for_service_health(service, runner)?;
             Ok("updated".into())
         }
         AdminAction::Repair {
@@ -246,7 +259,10 @@ fn execute_action(
         } => {
             let config_toml = Zeroizing::new(config_toml);
             verify_bundled_resolver(&expected_binary_sha256)?;
-            service.repair(&config_toml)?;
+            service
+                .repair(&config_toml)
+                .map_err(|error| service_error(error, service))?;
+            wait_for_service_health(service, runner)?;
             Ok("repaired".into())
         }
         AdminAction::Uninstall => {
@@ -254,7 +270,10 @@ fn execute_action(
             Ok("uninstalled".into())
         }
         AdminAction::Start => {
-            service.start()?;
+            service
+                .start()
+                .map_err(|error| service_error(error, service))?;
+            wait_for_service_health(service, runner)?;
             Ok("started".into())
         }
         AdminAction::Stop => {
@@ -262,7 +281,10 @@ fn execute_action(
             Ok("stopped".into())
         }
         AdminAction::Restart => {
-            service.restart()?;
+            service
+                .restart()
+                .map_err(|error| service_error(error, service))?;
+            wait_for_service_health(service, runner)?;
             Ok("restarted".into())
         }
         AdminAction::ApplyConfig {
@@ -270,9 +292,26 @@ fn execute_action(
             restart,
         } => {
             let config_toml = Zeroizing::new(config_toml);
-            apply_config(&config_toml, restart, paths, service, runner)?;
+            apply_config(&config_toml, restart, paths, service, runner)
+                .map_err(|error| service_error(error, service))?;
             Ok("applied".into())
         }
+    }
+}
+
+fn wait_for_service_health(
+    service: &impl AdminService,
+    runner: &impl CommandRunner,
+) -> Result<(), AdminError> {
+    runner
+        .wait_for_health(HEALTH_TIMEOUT)
+        .map_err(|error| service_error(error, service))
+}
+
+fn service_error(error: AdminError, service: &impl AdminService) -> AdminError {
+    match service.diagnostics() {
+        Some(diagnostics) => AdminError::Operation(format!("{error}\n\n{diagnostics}")),
+        None => error,
     }
 }
 

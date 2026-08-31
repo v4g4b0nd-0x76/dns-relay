@@ -7,7 +7,7 @@ use std::{
 
 use crate::AdminError;
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", test))]
 pub mod linux;
 
 #[cfg(target_os = "macos")]

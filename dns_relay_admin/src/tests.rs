@@ -10,7 +10,7 @@ use crate::platform::{
     CommandSpec,
     linux::{
         LinuxServiceManager, elevation_command_for, linux_invoking_uid_from,
-        systemctl_service_status,
+        linux_service_diagnostics, systemctl_service_status,
     },
 };
 use crate::{
@@ -96,6 +96,36 @@ fn linux_systemctl_commands_are_closed_and_exact() {
         linux.status_command(),
         CommandSpec::new("/usr/bin/systemctl", ["is-active", "dns-relay-gui.service"])
     );
+    assert_eq!(
+        linux.show_command(),
+        CommandSpec::new(
+            "/usr/bin/systemctl",
+            [
+                "show",
+                "dns-relay-gui.service",
+                "-p",
+                "ActiveState",
+                "-p",
+                "SubState",
+                "-p",
+                "Result",
+                "-p",
+                "NRestarts",
+                "-p",
+                "ExecMainCode",
+                "-p",
+                "ExecMainStatus",
+                "--no-pager",
+            ]
+        )
+    );
+    assert_eq!(
+        linux.journal_command(),
+        CommandSpec::new(
+            "/usr/bin/journalctl",
+            ["-u", "dns-relay-gui.service", "-n", "80", "--no-pager"]
+        )
+    );
 }
 
 #[test]
@@ -110,6 +140,21 @@ fn linux_restart_loop_is_not_reported_as_stopped() {
         ServiceStatus::Stopped
     );
     assert!(systemctl_service_status(false, "activating\n", "").is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn linux_service_diagnostics_include_systemd_state_and_journal() {
+    let message = linux_service_diagnostics(
+        "ActiveState=activating\nSubState=auto-restart\nResult=exit-code\nNRestarts=42\nExecMainCode=1\nExecMainStatus=1\n",
+        "dns_relay[123]: Error: NoHealthyResolvers\nsystemd[1]: Failed with result 'exit-code'.\n",
+    )
+    .unwrap();
+
+    assert!(message.contains("ActiveState=activating"));
+    assert!(message.contains("SubState=auto-restart"));
+    assert!(message.contains("NRestarts=42"));
+    assert!(message.contains("NoHealthyResolvers"));
 }
 
 #[test]
@@ -615,6 +660,7 @@ struct FakeService {
     state: Cell<ServiceStatus>,
     restart_fails: Cell<bool>,
     restarts: Cell<usize>,
+    diagnostics: &'static str,
 }
 
 impl FakeService {
@@ -623,7 +669,13 @@ impl FakeService {
             state: Cell::new(ServiceStatus::Running),
             restart_fails: Cell::new(false),
             restarts: Cell::new(0),
+            diagnostics: "",
         }
+    }
+
+    fn with_diagnostics(mut self, diagnostics: &'static str) -> Self {
+        self.diagnostics = diagnostics;
+        self
     }
 }
 
@@ -670,6 +722,10 @@ impl crate::AdminService for FakeService {
     fn uninstall(&self) -> Result<(), AdminError> {
         self.stop()
     }
+
+    fn diagnostics(&self) -> Option<String> {
+        (!self.diagnostics.is_empty()).then(|| self.diagnostics.into())
+    }
 }
 
 #[test]
@@ -698,6 +754,24 @@ fn admin_dispatch_maps_only_closed_service_actions() {
         "uninstalled"
     );
     assert_eq!(service.state.get(), ServiceStatus::Stopped);
+}
+
+#[test]
+fn failed_start_reports_service_diagnostics() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    let service = FakeService::running()
+        .with_diagnostics("systemctl show dns-relay-gui.service:\nNRestarts=42\njournalctl -u dns-relay-gui.service:\nError: NoHealthyResolvers");
+    service.stop().unwrap();
+    let runner = FakeRunner::healthy();
+    runner.health_fails.set(true);
+
+    let error = crate::execute_action(AdminAction::Start, &paths, &service, &runner).unwrap_err();
+    let message = error.to_string();
+
+    assert!(message.contains("health check failed"));
+    assert!(message.contains("NRestarts=42"));
+    assert!(message.contains("NoHealthyResolvers"));
 }
 
 #[test]
