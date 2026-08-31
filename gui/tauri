@@ -1,0 +1,37 @@
+> tauri dev
+
+     Running BeforeDevCommand (`npm run dev`)
+
+> dev
+> vite
+
+
+  VITE v8.2.2  ready in 89 ms
+
+  ➜  Local:   http://127.0.0.1:1420/
+     Running DevCommand (`cargo  run --no-default-features --color always --`)
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /Users/vangabond/Documents/Projects/dns-relay/dns_relay/Cargo.toml
+workspace: /Users/vangabond/Documents/Projects/dns-relay/Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /Users/vangabond/Documents/Projects/dns-relay/resolver_proxy/Cargo.toml
+workspace: /Users/vangabond/Documents/Projects/dns-relay/Cargo.toml
+        Info Watching /Users/vangabond/Docu        Info Watching /Users/vangabond/Docu        Info Watching /Users/vangabond/Docu        Info Watching /Users/vangabond/Docu        Info Watchin           W        Info Watching /Users/vangabond/Docu        Info Watching c        Info Watching  Wa       /Users/vangabond/Documents/Projects/dns-relay/dns_relay_admin for changes...
+   Compiling objc2-exception-helper v0.1.1
+   Compiling ring v0.17.14
+   Compiling objc2 v0.6.4
+   Compiling block2 v0.6.2
+   Compiling objc2-core-foundation v0.3.2
+   Compiling dispatch2 v0.3.1
+   Compiling rustls v0.23.42
+   Compiling objc2-foundation v0.3.2
+   Compiling objc2-core-graphics v0.3.2
+   Compiling rustls-webpki v0.103.13
+   Compiling tokio-rustls v0.26.4
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling quinn-proto v0.11.16
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.12.28
+   Compiling reqwest v0.13.4
+   Compiling dns-relay-shared v1.6.10 (/Users/vangabond/Documents/Projects/dns-relay/shared)
+   Compiling quinn v0.11.11

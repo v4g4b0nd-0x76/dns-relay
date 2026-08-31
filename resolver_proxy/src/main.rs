@@ -57,8 +57,8 @@ enum Commands {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Error> {
-    let _ = init_logger();
     let cli = Cli::parse();
+    let _ = init_logger();
 
     match cli.command.unwrap_or(Commands::Run) {
         Commands::Run => run_server(&cli.conf).await,

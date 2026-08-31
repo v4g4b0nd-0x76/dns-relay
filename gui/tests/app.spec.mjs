@@ -2,8 +2,8 @@ import { test, expect } from "@playwright/test";
 
 const production = "http://127.0.0.1:1420";
 
-async function openApp(page, width = 420) {
-  await page.setViewportSize({ width, height: 720 });
+async function openApp(page, width = 420, height = 720) {
+  await page.setViewportSize({ width, height });
   await page.goto(production);
 }
 
@@ -14,6 +14,16 @@ test("first launch installs and starts through one setup action", async ({ page 
   await page.getByRole("button", { name: "Install and start" }).click();
   await expect(page.locator("[data-view='dashboard']")).toBeVisible();
   await expect(page.locator("[data-service-state]")).toHaveText("Running");
+});
+
+test("first launch explains the setup without dead navigation", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 720 });
+  await page.goto(`${production}/?fixture=first-launch`);
+
+  await expect(page.locator("[data-view-nav]")).toHaveCount(1);
+  await expect(page.getByText("Confirm locations", { exact: true })).toBeVisible();
+  await expect(page.getByText("Choose resolver", { exact: true })).toBeVisible();
+  await expect(page.getByText("Install service", { exact: true })).toBeVisible();
 });
 
 test("cancelled elevation leaves first launch recoverable", async ({ page }) => {
@@ -110,21 +120,23 @@ test("production shell exposes the six operational views", async ({ page }) => {
   await expect(page.locator("[data-view='settings']")).toBeVisible();
 });
 
-test("desktop shell uses the available window width", async ({ page }) => {
+test("desktop shell keeps the compact screenshot frame", async ({ page }) => {
   await openApp(page, 1440);
   const shell = await page.locator("[data-app-shell]").boundingBox();
 
   expect(shell).not.toBeNull();
-  expect(shell.width).toBeGreaterThan(1360);
-  expect(shell.x).toBeLessThan(4);
+  expect(shell.width).toBeLessThanOrEqual(1100);
+  expect(Math.abs(shell.x - (1440 - shell.width) / 2)).toBeLessThan(2);
 });
 
-test("wide desktop content starts near the navigation rail", async ({ page }) => {
-  await openApp(page, 1920);
-  const view = await page.locator("[data-view='dashboard']").boundingBox();
+test("dashboard fits the default desktop height without initial scrolling", async ({ page }) => {
+  await openApp(page, 1024);
+  const layout = await page.locator("[data-view-host]").evaluate((view) => ({
+    clientHeight: view.clientHeight,
+    scrollHeight: view.scrollHeight,
+  }));
 
-  expect(view).not.toBeNull();
-  expect(view.x).toBeLessThan(180);
+  expect(layout.scrollHeight).toBeLessThanOrEqual(layout.clientHeight + 1);
 });
 
 test("boolean config fields render as app switches", async ({ page }) => {
@@ -135,19 +147,19 @@ test("boolean config fields render as app switches", async ({ page }) => {
   await expect(page.locator(".check-row .switch")).toHaveCount(checkboxCount);
 });
 
-test("compact dashboard keeps service facts readable", async ({ page }) => {
+test("compact dashboard keeps service facts readable in two columns", async ({ page }) => {
   await openApp(page);
 
-  const narrowFacts = await page.locator(".detail-list > div").evaluateAll((items) =>
-    items
-      .map((item) => item.getBoundingClientRect().width)
-      .filter((width) => width < 130),
-  );
+  const facts = await page.locator(".detail-list > div").evaluateAll((items) => items.map((item) => ({
+    clipped: item.scrollWidth > item.clientWidth,
+    width: item.getBoundingClientRect().width,
+  })));
 
-  expect(narrowFacts).toEqual([]);
+  expect(facts).toHaveLength(4);
+  expect(facts.every(({ clipped, width }) => !clipped && width >= 85)).toBe(true);
 });
 
-test("desktop forms have breathing room inside cards", async ({ page }) => {
+test("desktop forms use the compact screenshot spacing", async ({ page }) => {
   await openApp(page, 1440);
   await page.locator("[data-target='relay']").click();
 
@@ -161,9 +173,26 @@ test("desktop forms have breathing room inside cards", async ({ page }) => {
     };
   });
 
-  expect(spacing.padding).toBeGreaterThanOrEqual(22);
-  expect(spacing.rowGap).toBeGreaterThanOrEqual(18);
-  expect(spacing.columnGap).toBeGreaterThanOrEqual(18);
+  expect(spacing.padding).toBeGreaterThanOrEqual(14);
+  expect(spacing.padding).toBeLessThanOrEqual(18);
+  expect(spacing.rowGap).toBeGreaterThanOrEqual(10);
+  expect(spacing.rowGap).toBeLessThanOrEqual(14);
+  expect(spacing.columnGap).toBeGreaterThanOrEqual(10);
+  expect(spacing.columnGap).toBeLessThanOrEqual(14);
+});
+
+test("compact dashboard keeps flat cards and the horizontal service summary", async ({ page }) => {
+  await openApp(page);
+
+  const hero = await page.locator(".hero").evaluate((element) => ({
+    backgroundImage: getComputedStyle(element).backgroundImage,
+    columns: getComputedStyle(element).gridTemplateColumns.split(" ").length,
+    height: element.getBoundingClientRect().height,
+  }));
+
+  expect(hero.backgroundImage).toBe("none");
+  expect(hero.columns).toBe(2);
+  expect(hero.height).toBeLessThan(280);
 });
 
 test("file action buttons do not stretch across toolbars", async ({ page }) => {
@@ -190,6 +219,55 @@ test("empty operational views are actionable", async ({ page }) => {
   await page.locator("[data-target='relay']").click();
   await expect(page.getByText("No relay endpoints", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add relay" })).toBeVisible();
+});
+
+test("compact resolver controls leave the address readable", async ({ page }) => {
+  await openApp(page, 420, 690);
+  await page.locator("[data-target='resolvers']").click();
+
+  const layout = await page.locator(".resolver-row").first().evaluate((row) => {
+    const main = row.querySelector(".row-main").getBoundingClientRect();
+    const actions = row.querySelector(".row-actions").getBoundingClientRect();
+    return { mainWidth: main.width, actionsTop: actions.top, mainBottom: main.bottom };
+  });
+
+  expect(layout.mainWidth).toBeGreaterThan(220);
+  expect(layout.actionsTop).toBeGreaterThanOrEqual(layout.mainBottom);
+});
+
+test("compact empty cards do not double their padding", async ({ page }) => {
+  await openApp(page, 420, 690);
+  await page.locator("[data-target='rules']").click();
+
+  await expect(page.locator(".empty-card")).toHaveCSS("padding", "0px");
+});
+
+test("compact relay action stays above the bottom navigation", async ({ page }) => {
+  await openApp(page, 420, 690);
+  await page.locator("[data-target='relay']").click();
+
+  const action = await page.getByRole("button", { name: "Add relay" }).boundingBox();
+  const navigation = await page.getByRole("navigation", { name: "Primary" }).boundingBox();
+  expect(action).not.toBeNull();
+  expect(navigation).not.toBeNull();
+  expect(action.y + action.height).toBeLessThanOrEqual(navigation.y - 4);
+});
+
+test("compact pending changes stay clear of scrolled settings", async ({ page }) => {
+  await openApp(page, 420, 690);
+  await page.locator("[data-target='settings']").click();
+  await page.getByLabel("Listener address").fill("127.0.0.1:5300");
+  await page.keyboard.press("Tab");
+  await expect(page.locator("[data-dirty-bar]")).toBeVisible();
+  await page.locator("[data-view-host]").evaluate((view) => { view.scrollTop = view.scrollHeight; });
+
+  const gap = await page.evaluate(() => {
+    const lastCard = document.querySelector("[data-view='settings'] .card:last-of-type").getBoundingClientRect();
+    const dirtyBar = document.querySelector("[data-dirty-bar]").getBoundingClientRect();
+    return dirtyBar.top - lastCard.bottom;
+  });
+
+  expect(gap).toBeGreaterThanOrEqual(12);
 });
 
 test("dashboard activity preview stays compact", async ({ page }) => {

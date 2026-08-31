@@ -15,3 +15,8 @@ cmp "$tmp/target/$target/release/dns_relay" "$tmp/binaries/dns_relay-$target"
 cmp "$tmp/target/$target/release/dns_relay_admin" "$tmp/binaries/dns_relay_admin-$target"
 test -s "$tmp/binaries/dns_relay-$target.sha256"
 test -s "$tmp/binaries/dns_relay_admin-$target.sha256"
+
+commands=$(make -n -C "$root" gui-mac)
+[[ $commands == *'cargo build --release --target aarch64-apple-darwin --bin dns_relay --bin dns_relay_admin'* ]]
+[[ $commands == *'stage_gui_sidecars.sh aarch64-apple-darwin'* ]]
+[[ $commands == *'npm run tauri build'* ]]

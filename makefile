@@ -1,4 +1,4 @@
-.PHONY: build build-gnu build-musl build-mac test run caps patch minor major
+.PHONY: build build-gnu build-musl build-mac gui-mac test run caps patch minor major
 
 # Which workspace binary to operate on. Override per-invocation, e.g.:
 #   make build bin=resolver_proxy
@@ -13,6 +13,10 @@ build-musl:
 	@./scripts/build.sh musl $(bin)
 build-mac:
 	@./scripts/build.sh mac $(bin)
+gui-mac:
+	@cargo build --release --target aarch64-apple-darwin --bin dns_relay --bin dns_relay_admin
+	@./scripts/stage_gui_sidecars.sh aarch64-apple-darwin
+	@cd gui && npm run tauri build
 test:
 	@cargo test --bin $(bin)
 run: build

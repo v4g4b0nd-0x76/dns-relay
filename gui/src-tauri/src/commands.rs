@@ -794,7 +794,12 @@ fn binary_version(path: &Path) -> Result<String, CommandError> {
     if !output.status.success() {
         return Err(CommandError::new(
             "version_check_failed",
-            format!("{} --version failed", path.display()),
+            format!(
+                "{} --version failed ({}): {}",
+                path.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
         ));
     }
     String::from_utf8(output.stdout)
