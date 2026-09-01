@@ -828,6 +828,8 @@ impl ApplyFixture {
 }
 
 const VALID_CONFIG: &str = "drop_list = []\nredirect_list = []\nresolvers = []\n";
+const HTTP_METRICS_CONFIG: &str = "drop_list = []\nredirect_list = []\nresolvers = []\n[metric_conf]\nenable = true\nreport_type = \"http\"\nreport_interval = 30\n";
+const LOG_METRICS_CONFIG: &str = "drop_list = []\nredirect_list = []\nresolvers = []\n[metric_conf]\nenable = true\nreport_type = \"log\"\nreport_interval = 30\n";
 
 #[test]
 fn invalid_toml_does_not_replace_live_config() {
@@ -872,9 +874,20 @@ fn failed_health_check_restores_config_and_running_state() {
     let fixture = ApplyFixture::running_with_config("old");
     fixture.runner.health_fails.set(true);
 
-    assert!(fixture.apply(VALID_CONFIG, true).is_err());
+    assert!(fixture.apply(HTTP_METRICS_CONFIG, true).is_err());
     assert_eq!(fixture.live_config(), "old");
     assert_eq!(fixture.service.state.get(), ServiceStatus::Running);
+}
+
+#[test]
+fn log_metrics_apply_does_not_wait_for_http_health() {
+    let fixture = ApplyFixture::running_with_config("old");
+    fixture.runner.health_fails.set(true);
+
+    fixture.apply(LOG_METRICS_CONFIG, true).unwrap();
+
+    assert_eq!(fixture.live_config(), LOG_METRICS_CONFIG);
+    assert_eq!(fixture.runner.health_checks.get(), 0);
 }
 
 #[test]
@@ -885,7 +898,7 @@ fn rule_only_apply_uses_hot_reload_without_restarting() {
 
     assert_eq!(fixture.live_config(), VALID_CONFIG);
     assert_eq!(fixture.service.restarts.get(), 0);
-    assert_eq!(fixture.runner.health_checks.get(), 1);
+    assert_eq!(fixture.runner.health_checks.get(), 0);
     assert_eq!(fs::read_to_string(&fixture.paths.backup).unwrap(), "old");
 }
 
@@ -893,9 +906,9 @@ fn rule_only_apply_uses_hot_reload_without_restarting() {
 fn restarting_apply_restarts_once_and_keeps_rollback_copy() {
     let fixture = ApplyFixture::running_with_config("old");
 
-    fixture.apply(VALID_CONFIG, true).unwrap();
+    fixture.apply(HTTP_METRICS_CONFIG, true).unwrap();
 
-    assert_eq!(fixture.live_config(), VALID_CONFIG);
+    assert_eq!(fixture.live_config(), HTTP_METRICS_CONFIG);
     assert_eq!(fixture.service.restarts.get(), 1);
     assert_eq!(fixture.runner.health_checks.get(), 1);
     assert_eq!(fs::read_to_string(&fixture.paths.backup).unwrap(), "old");

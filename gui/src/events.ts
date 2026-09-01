@@ -1,5 +1,5 @@
 import type { Backend } from "./backend";
-import type { Store } from "./store";
+import type { ShellState, Store } from "./store";
 import type { DnsRelayConfig, ViewId } from "./types";
 
 type SecretKind = "relay" | "obfs";
@@ -179,7 +179,7 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
     store.update((state) => {
       if (!state.app.draft) return;
       change(state.app.draft);
-      state.dirty = true;
+      updateDirty(state);
     });
   }
 
@@ -198,8 +198,8 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
       state.app.draft.record_history_conf = { matched_list: [], lines: 1000 };
     }
     setPath(state.app.draft as unknown as Record<string, unknown>, path, value);
-    state.dirty = true;
-    root.querySelector<HTMLElement>("[data-dirty-bar]")?.removeAttribute("hidden");
+    updateDirty(state);
+    syncDirtyBar();
   }
 
   function moveResolver(index: number, direction: number) {
@@ -451,7 +451,7 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
   async function useRaw(rawToml: string) {
     try {
       const draft = await backend.parseConfig(rawToml);
-      store.update((state) => { state.app.draft = draft; state.rawError = undefined; state.dirty = true; });
+      store.update((state) => { state.app.draft = draft; state.rawError = undefined; updateDirty(state); });
       notify("Configuration is valid");
     } catch (error) {
       store.update((state) => { state.rawError = message(error); });
@@ -522,6 +522,12 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
     if (live) live.textContent = text;
     toastTimer = window.setTimeout(() => { if (toast) toast.hidden = true; }, 2400);
   }
+
+  function syncDirtyBar() {
+    const dirtyBar = root.querySelector<HTMLElement>("[data-dirty-bar]");
+    if (!dirtyBar) return;
+    dirtyBar.toggleAttribute("hidden", !store.get().dirty);
+  }
 }
 
 function setPath(root: Record<string, unknown>, path: string, value: unknown) {
@@ -550,6 +556,12 @@ function configSecretReferences(draft: DnsRelayConfig) {
     ...draft.relay_conf.relay_instances.map((relay) => relay.relay_key),
     ...draft.obfs_conf.keys,
   ].filter((reference) => reference.startsWith("vault://")));
+}
+
+function updateDirty(state: ShellState) {
+  state.dirty = JSON.stringify(state.app.draft) !== JSON.stringify(state.savedDraft)
+    || state.generatedSecrets.length > 0
+    || state.pendingSecretDeletes.length > 0;
 }
 
 function download(name: string, content: string) {

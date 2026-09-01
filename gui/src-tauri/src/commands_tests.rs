@@ -3,9 +3,9 @@ use tempfile::tempdir;
 
 use crate::{
     commands::{
-        CommandError, ServiceAction, ServiceState, bundled_paths_from_exe, materialize_for_apply,
-        migrate_legacy_secrets, parse_config, read_bounded_lines, validate_draft,
-        version_outputs_match,
+        CommandError, ServiceAction, ServiceState, bundled_paths_from_exe,
+        config_change_requires_restart, materialize_for_apply, migrate_legacy_secrets,
+        parse_config, read_bounded_lines, validate_draft, version_outputs_match,
     },
     secrets::{FallbackVault, SecretId, SecretManager, SecretStore},
     state::draft_for_install_files,
@@ -31,6 +31,19 @@ fn command_error_omits_absent_field() {
         serde_json::to_value(CommandError::new("unavailable", "Metrics unavailable")).unwrap();
 
     assert!(value.get("field").is_none());
+}
+
+#[test]
+fn rule_only_changes_do_not_require_restart_when_hot_reload_is_enabled() {
+    let saved = crate::state::starter_draft();
+    let mut draft = saved.clone();
+    draft.drop_list.push("ads.example".into());
+
+    assert!(!config_change_requires_restart(Some(&saved), &draft));
+
+    draft.dns_target = "127.0.0.1:5353".into();
+    assert!(config_change_requires_restart(Some(&saved), &draft));
+    assert!(config_change_requires_restart(None, &draft));
 }
 
 #[test]

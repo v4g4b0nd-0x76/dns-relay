@@ -42,8 +42,9 @@ pub fn apply_config(
     service: &impl ServiceManager,
     runner: &impl CommandRunner,
 ) -> Result<(), AdminError> {
-    toml::from_str::<toml::Value>(config_toml)
+    let parsed = toml::from_str::<toml::Value>(config_toml)
         .map_err(|error| AdminError::Operation(format!("invalid config TOML: {error}")))?;
+    let has_http_health = exposes_http_health(&parsed);
 
     let prior_status = service.status()?;
     let staged = staging_path(&paths.config);
@@ -78,8 +79,8 @@ pub fn apply_config(
     let applied = match (prior_status, restart) {
         (ServiceStatus::Running, true) => service
             .restart()
-            .and_then(|()| runner.wait_for_health(HEALTH_TIMEOUT)),
-        (ServiceStatus::Running, false) => runner.wait_for_health(HEALTH_TIMEOUT),
+            .and_then(|()| wait_for_http_health(has_http_health, runner)),
+        (ServiceStatus::Running, false) => wait_for_http_health(has_http_health, runner),
         (ServiceStatus::Stopped, _) => Ok(()),
     };
 
@@ -88,6 +89,30 @@ pub fn apply_config(
         return Err(error);
     }
     Ok(())
+}
+
+fn wait_for_http_health(
+    has_http_health: bool,
+    runner: &impl CommandRunner,
+) -> Result<(), AdminError> {
+    if has_http_health {
+        runner.wait_for_health(HEALTH_TIMEOUT)
+    } else {
+        Ok(())
+    }
+}
+
+fn exposes_http_health(config: &toml::Value) -> bool {
+    config
+        .get("metric_conf")
+        .and_then(|metrics| metrics.get("enable"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false)
+        && config
+            .get("metric_conf")
+            .and_then(|metrics| metrics.get("report_type"))
+            .and_then(toml::Value::as_str)
+            == Some("http")
 }
 
 fn backup_config(paths: &PlatformPaths) -> Result<(), AdminError> {

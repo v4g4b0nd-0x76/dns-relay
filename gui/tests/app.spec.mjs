@@ -368,6 +368,15 @@ test("production draft can be reverted or applied", async ({ page }) => {
   await expect(page.locator("[data-toast]")).toContainText("applied");
 });
 
+test("unchanged draft does not keep pending changes", async ({ page }) => {
+  await openApp(page);
+  await page.locator("[data-target='resolvers']").click();
+  await page.getByLabel("Secure resolvers only").uncheck();
+  await expect(page.locator("[data-dirty-bar]")).toBeVisible();
+  await page.getByLabel("Secure resolvers only").check();
+  await expect(page.locator("[data-dirty-bar]")).toBeHidden();
+});
+
 test("production dialog restores focus and closes with Escape", async ({ page }) => {
   await openApp(page);
   await page.locator("[data-target='rules']").click();

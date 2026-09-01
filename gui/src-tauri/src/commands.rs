@@ -195,6 +195,12 @@ pub async fn apply_draft(
         return Err(adoption_required());
     }
     require_valid_draft(&draft)?;
+    let saved = state
+        .draft
+        .lock()
+        .map_err(|_| unavailable("draft state"))?
+        .clone();
+    let restart = config_change_requires_restart(saved.as_ref(), &draft);
     let secrets = Arc::clone(&state.secrets);
     let apply_copy = draft.clone();
     let service = tauri::async_runtime::spawn_blocking(move || {
@@ -202,7 +208,7 @@ pub async fn apply_draft(
         let config_toml = config_for_admin(&apply_copy, secrets.as_ref())?;
         submit_admin(AdminAction::ApplyConfig {
             config_toml,
-            restart: true,
+            restart,
         })?;
         current_service_state()
     })
@@ -558,6 +564,22 @@ fn config_for_admin(draft: &Conf, store: &impl SecretStore) -> Result<String, Co
     let config_toml = materialized.to_toml();
     zeroize_materialized_secrets(&mut materialized);
     config_toml.map_err(|error| CommandError::new("invalid_config", error.to_string()))
+}
+
+pub(crate) fn config_change_requires_restart(saved: Option<&Conf>, draft: &Conf) -> bool {
+    if !draft.hotreload_conf.enable {
+        return true;
+    }
+    let Some(saved) = saved else {
+        return true;
+    };
+    let mut saved_without_rules = saved.clone();
+    let mut draft_without_rules = draft.clone();
+    saved_without_rules.drop_list.clear();
+    saved_without_rules.redirect_list.clear();
+    draft_without_rules.drop_list.clear();
+    draft_without_rules.redirect_list.clear();
+    saved_without_rules.to_toml().ok() != draft_without_rules.to_toml().ok()
 }
 
 pub(crate) fn migrate_legacy_secrets(
