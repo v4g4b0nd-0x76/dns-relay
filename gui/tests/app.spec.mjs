@@ -253,6 +253,19 @@ test("compact relay action stays above the bottom navigation", async ({ page }) 
   expect(action.y + action.height).toBeLessThanOrEqual(navigation.y - 4);
 });
 
+test("compact relay visible content stays above the bottom navigation", async ({ page }) => {
+  await openApp(page, 420, 720);
+  await page.locator("[data-target='relay']").click();
+
+  const layout = await page.evaluate(() => {
+    const nav = document.querySelector("nav").getBoundingClientRect();
+    const last = document.querySelector("[data-view='relay'] > :last-child").getBoundingClientRect();
+    return { navTop: nav.top, contentBottom: last.bottom };
+  });
+
+  expect(layout.contentBottom).toBeLessThanOrEqual(layout.navTop - 4);
+});
+
 test("compact pending changes stay clear of scrolled settings", async ({ page }) => {
   await openApp(page, 420, 690);
   await page.locator("[data-target='settings']").click();
@@ -279,16 +292,47 @@ test("dashboard activity preview stays compact", async ({ page }) => {
   expect(preview.height).toBeLessThan(180);
 });
 
-test("settings listener field uses a full row", async ({ page }) => {
+test("dashboard metric row stays separated from activity preview", async ({ page }) => {
+  await openApp(page, 1440);
+
+  const gap = await page.evaluate(() => {
+    const metrics = document.querySelector(".metrics").getBoundingClientRect();
+    const preview = document.querySelector("[data-dashboard-activity]").getBoundingClientRect();
+    return preview.top - metrics.bottom;
+  });
+
+  expect(gap).toBeGreaterThanOrEqual(12);
+});
+
+test("settings listener field stays aligned in the field column", async ({ page }) => {
   await openApp(page, 1440);
   await page.locator("[data-target='settings']").click();
 
-  const card = await page.locator("[data-settings-core]").boundingBox();
   const listener = await page.getByLabel("Listener address").boundingBox();
+  const interval = await page.getByLabel("Hot reload interval (ms)").boundingBox();
 
-  expect(card).not.toBeNull();
   expect(listener).not.toBeNull();
-  expect(listener.width).toBeGreaterThan(card.width * 0.8);
+  expect(interval).not.toBeNull();
+  expect(Math.abs(listener.x - interval.x)).toBeLessThan(1);
+  expect(Math.abs(listener.width - interval.width)).toBeLessThan(1);
+});
+
+test("resolver discovery keeps switches and text fields aligned", async ({ page }) => {
+  await openApp(page, 1440);
+  await page.locator("[data-target='resolvers']").click();
+
+  await expect(page.locator("[data-resolver-options] .option-column .check-row")).toHaveCount(3);
+  await expect(page.locator("[data-resolver-options] .field-column input, [data-resolver-options] .field-column textarea")).toHaveCount(3);
+});
+
+test("settings groups keep switches and text fields aligned", async ({ page }) => {
+  await openApp(page, 1440);
+  await page.locator("[data-target='settings']").click();
+
+  await expect(page.locator("[data-settings-core] .option-column .check-row")).toHaveCount(3);
+  await expect(page.locator("[data-settings-core] .field-column input")).toHaveCount(2);
+  await expect(page.locator("[data-settings-metrics] .option-column .check-row")).toHaveCount(2);
+  await expect(page.locator("[data-settings-metrics] .field-column input, [data-settings-metrics] .field-column select, [data-settings-metrics] .field-column textarea")).toHaveCount(4);
 });
 
 test("production service control reports its final state", async ({ page }) => {

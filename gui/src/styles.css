@@ -112,12 +112,13 @@
 }
 
 .activity-preview {
+  margin-top: 12px;
   padding: 0;
 }
 
 .activity-preview .empty-state {
-  min-height: 100px;
-  padding: 14px 16px;
+  min-height: 88px;
+  padding: 8px 16px;
 }
 
 .activity-preview .empty-state > svg {
@@ -215,6 +216,23 @@
   grid-column: 1 / -1;
 }
 
+.split-form {
+  display: grid;
+  grid-template-columns: minmax(260px, .9fr) minmax(0, 1.1fr);
+  gap: 12px;
+}
+
+.split-form > .eyebrow {
+  grid-column: 1 / -1;
+}
+
+.option-column,
+.field-column {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
 .span-2 {
   grid-column: 1 / -1;
 }
@@ -272,6 +290,10 @@
   .resolver-row .row-actions {
     width: 100%;
     justify-content: flex-end;
+  }
+
+  .split-form {
+    grid-template-columns: 1fr;
   }
 }
 

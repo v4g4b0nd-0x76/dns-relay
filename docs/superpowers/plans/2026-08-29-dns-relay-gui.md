@@ -10,6 +10,33 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-29-dns-relay-gui-design.md`
 
+## Current Status - 2026-09-01
+
+The detailed task body below is the original implementation recipe. Use this
+status section as the current checklist for this checkout.
+
+- [x] Task 1: Interactive HTML prototype exists and is covered by Playwright.
+- [x] Task 2: DNS Relay config serialization, validation, and GUI-editable field coverage are implemented.
+- [x] Task 3: Closed admin request protocol and fixed request paths are implemented.
+- [x] Task 4: Atomic config apply, validation, health check, and rollback tests are implemented.
+- [x] Task 5: Linux systemd service management and elevation paths are implemented.
+- [x] Task 6: macOS launchd/elevation code exists with target-gated tests; needs real macOS runtime verification.
+- [ ] Task 7: Windows service host and elevation are still open.
+- [x] Task 8: Credential vault plus encrypted fallback are implemented and tested.
+- [x] Task 9: Secure Tauri shell/backend contract is implemented without shell capability.
+- [x] Task 10: Production GUI shell, state, accessibility, and responsive navigation are implemented.
+- [x] Task 11: Setup, service control, dashboard, observability, and tray behavior are implemented and tested locally.
+- [x] Task 12: Resolver, rules, relay, activity, settings, import/export, and secret workflows are implemented and tested locally.
+- [ ] Task 13: Packaging is partial: Linux `.deb` and `.rpm` build locally; AppImage, signed updates, platform CI, and full Windows/macOS bundle verification remain open.
+- [ ] Task 14: Final verification is partial: local Rust/frontend/Linux bundle checks pass; clean Linux install, macOS runtime, Windows runtime, signed updater, and full release security audit remain open.
+
+### Latest Local Verification
+
+- [x] `cargo test --workspace`
+- [x] `npm test` (`57 passed`)
+- [x] `npm run tauri build` produced Linux `.deb` and `.rpm`
+- [x] Visual QA sampled Dashboard, Resolvers, Rules, Relay, Activity, Settings, and Setup at compact, standard, and wide desktop sizes.
+
 ## Global Constraints
 
 - Version 1 manages `dns_relay` only; do not add `resolver_proxy` management.
