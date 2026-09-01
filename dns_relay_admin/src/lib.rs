@@ -11,7 +11,10 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
-use apply::{CommandRunner, HEALTH_TIMEOUT, ServiceManager, ServiceStatus, apply_config};
+use apply::{
+    CommandRunner, HEALTH_TIMEOUT, ServiceManager, ServiceStatus, apply_config,
+    config_exposes_http_health,
+};
 use process::SystemCommandRunner;
 
 pub use paths::PlatformPaths;
@@ -240,7 +243,7 @@ fn execute_action(
             service
                 .install(&config_toml)
                 .map_err(|error| service_error(error, service))?;
-            wait_for_service_health(service, runner)?;
+            wait_for_configured_health(&config_toml, service, runner)?;
             Ok("installed".into())
         }
         AdminAction::Update {
@@ -250,7 +253,7 @@ fn execute_action(
             service
                 .update()
                 .map_err(|error| service_error(error, service))?;
-            wait_for_service_health(service, runner)?;
+            wait_for_live_config_health(paths, service, runner)?;
             Ok("updated".into())
         }
         AdminAction::Repair {
@@ -262,7 +265,7 @@ fn execute_action(
             service
                 .repair(&config_toml)
                 .map_err(|error| service_error(error, service))?;
-            wait_for_service_health(service, runner)?;
+            wait_for_configured_health(&config_toml, service, runner)?;
             Ok("repaired".into())
         }
         AdminAction::Uninstall => {
@@ -273,7 +276,7 @@ fn execute_action(
             service
                 .start()
                 .map_err(|error| service_error(error, service))?;
-            wait_for_service_health(service, runner)?;
+            wait_for_live_config_health(paths, service, runner)?;
             Ok("started".into())
         }
         AdminAction::Stop => {
@@ -284,7 +287,7 @@ fn execute_action(
             service
                 .restart()
                 .map_err(|error| service_error(error, service))?;
-            wait_for_service_health(service, runner)?;
+            wait_for_live_config_health(paths, service, runner)?;
             Ok("restarted".into())
         }
         AdminAction::ApplyConfig {
@@ -306,6 +309,27 @@ fn wait_for_service_health(
     runner
         .wait_for_health(HEALTH_TIMEOUT)
         .map_err(|error| service_error(error, service))
+}
+
+fn wait_for_configured_health(
+    config_toml: &str,
+    service: &impl AdminService,
+    runner: &impl CommandRunner,
+) -> Result<(), AdminError> {
+    if config_exposes_http_health(config_toml)? {
+        wait_for_service_health(service, runner)
+    } else {
+        Ok(())
+    }
+}
+
+fn wait_for_live_config_health(
+    paths: &PlatformPaths,
+    service: &impl AdminService,
+    runner: &impl CommandRunner,
+) -> Result<(), AdminError> {
+    let config_toml = fs::read_to_string(&paths.config)?;
+    wait_for_configured_health(&config_toml, service, runner)
 }
 
 fn service_error(error: AdminError, service: &impl AdminService) -> AdminError {

@@ -4,8 +4,9 @@ use tempfile::tempdir;
 use crate::{
     commands::{
         CommandError, ServiceAction, ServiceState, bundled_paths_from_exe,
-        config_change_requires_restart, materialize_for_apply, migrate_legacy_secrets,
-        parse_config, read_bounded_lines, validate_draft, version_outputs_match,
+        config_change_requires_restart, ensure_installation_current_from_paths,
+        materialize_for_apply, migrate_legacy_secrets, parse_config, read_bounded_lines,
+        validate_draft, version_outputs_match,
     },
     secrets::{FallbackVault, SecretId, SecretManager, SecretStore},
     state::draft_for_install_files,
@@ -44,6 +45,30 @@ fn rule_only_changes_do_not_require_restart_when_hot_reload_is_enabled() {
     draft.dns_target = "127.0.0.1:5353".into();
     assert!(config_change_requires_restart(Some(&saved), &draft));
     assert!(config_change_requires_restart(None, &draft));
+}
+
+#[test]
+fn installation_currency_checks_installed_admin_helper_hash() {
+    let root = tempdir().unwrap();
+    let bundled_admin = root.path().join("bundled_admin");
+    let bundled_resolver = root.path().join("bundled_resolver");
+    let installed_admin = root.path().join("installed_admin");
+    let installed_resolver = root.path().join("installed_resolver");
+    std::fs::write(&bundled_admin, "new admin").unwrap();
+    std::fs::write(&bundled_resolver, "resolver").unwrap();
+    std::fs::write(&installed_admin, "old admin").unwrap();
+    std::fs::write(&installed_resolver, "resolver").unwrap();
+
+    let error = ensure_installation_current_from_paths(
+        &installed_admin,
+        &installed_resolver,
+        &bundled_admin,
+        &bundled_resolver,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "update_required");
+    assert!(error.message.contains("admin helper"));
 }
 
 #[test]

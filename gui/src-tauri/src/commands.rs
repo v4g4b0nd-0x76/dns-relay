@@ -204,7 +204,7 @@ pub async fn apply_draft(
     let secrets = Arc::clone(&state.secrets);
     let apply_copy = draft.clone();
     let service = tauri::async_runtime::spawn_blocking(move || {
-        ensure_versions_match()?;
+        ensure_installation_current()?;
         let config_toml = config_for_admin(&apply_copy, secrets.as_ref())?;
         submit_admin(AdminAction::ApplyConfig {
             config_toml,
@@ -789,21 +789,42 @@ fn require_sidecar(path: &Path, name: &str) -> Result<(), CommandError> {
     })
 }
 
-fn ensure_versions_match() -> Result<(), CommandError> {
+fn ensure_installation_current() -> Result<(), CommandError> {
     let paths = PlatformPaths::current().map_err(admin_error)?;
-    let (_, bundled) = bundled_paths()?;
-    require_sidecar(&bundled, "resolver")?;
-    require_sidecar(&paths.installed_binary, "installed resolver")?;
-    let bundled_version = binary_version(&bundled)?;
-    let installed_version = binary_version(&paths.installed_binary)?;
-    if version_outputs_match(&bundled_version, &installed_version) {
+    let (helper, resolver) = bundled_paths()?;
+    ensure_installation_current_from_paths(
+        &paths.admin_binary,
+        &paths.installed_binary,
+        &helper,
+        &resolver,
+    )
+}
+
+pub(crate) fn ensure_installation_current_from_paths(
+    installed_admin: &Path,
+    installed_resolver: &Path,
+    bundled_admin: &Path,
+    bundled_resolver: &Path,
+) -> Result<(), CommandError> {
+    compare_binary_hash(bundled_admin, installed_admin, "admin helper")?;
+    compare_binary_hash(bundled_resolver, installed_resolver, "resolver")
+}
+
+fn compare_binary_hash(
+    bundled: &Path,
+    installed: &Path,
+    name: &str,
+) -> Result<(), CommandError> {
+    require_sidecar(bundled, name)?;
+    require_sidecar(installed, &format!("installed {name}"))?;
+    let bundled_hash = dns_relay_admin::sha256_file(bundled).map_err(admin_error)?;
+    let installed_hash = dns_relay_admin::sha256_file(installed).map_err(admin_error)?;
+    if bundled_hash == installed_hash {
         Ok(())
     } else {
         Err(CommandError::new(
             "update_required",
-            format!(
-                "Bundled resolver {bundled_version} does not match installed resolver {installed_version}"
-            ),
+            format!("Bundled {name} does not match installed {name}; run Repair to update DNS Relay"),
         ))
     }
 }

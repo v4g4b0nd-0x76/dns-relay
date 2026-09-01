@@ -42,8 +42,7 @@ pub fn apply_config(
     service: &impl ServiceManager,
     runner: &impl CommandRunner,
 ) -> Result<(), AdminError> {
-    let parsed = toml::from_str::<toml::Value>(config_toml)
-        .map_err(|error| AdminError::Operation(format!("invalid config TOML: {error}")))?;
+    let parsed = parse_config(config_toml)?;
     let has_http_health = exposes_http_health(&parsed);
 
     let prior_status = service.status()?;
@@ -100,6 +99,15 @@ fn wait_for_http_health(
     } else {
         Ok(())
     }
+}
+
+pub(crate) fn config_exposes_http_health(config_toml: &str) -> Result<bool, AdminError> {
+    parse_config(config_toml).map(|config| exposes_http_health(&config))
+}
+
+fn parse_config(config_toml: &str) -> Result<toml::Value, AdminError> {
+    toml::from_str::<toml::Value>(config_toml)
+        .map_err(|error| AdminError::Operation(format!("invalid config TOML: {error}")))
 }
 
 fn exposes_http_health(config: &toml::Value) -> bool {

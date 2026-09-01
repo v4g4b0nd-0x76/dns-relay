@@ -760,6 +760,8 @@ fn admin_dispatch_maps_only_closed_service_actions() {
 fn failed_start_reports_service_diagnostics() {
     let root = tempdir().unwrap();
     let paths = PlatformPaths::for_test(root.path());
+    fs::create_dir_all(paths.config.parent().unwrap()).unwrap();
+    fs::write(&paths.config, HTTP_METRICS_CONFIG).unwrap();
     let service = FakeService::running()
         .with_diagnostics("systemctl show dns-relay-gui.service:\nNRestarts=42\njournalctl -u dns-relay-gui.service:\nError: NoHealthyResolvers");
     service.stop().unwrap();
@@ -772,6 +774,22 @@ fn failed_start_reports_service_diagnostics() {
     assert!(message.contains("health check failed"));
     assert!(message.contains("NRestarts=42"));
     assert!(message.contains("NoHealthyResolvers"));
+}
+
+#[test]
+fn start_with_log_metrics_config_does_not_wait_for_http_health() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    fs::create_dir_all(paths.config.parent().unwrap()).unwrap();
+    fs::write(&paths.config, LOG_METRICS_CONFIG).unwrap();
+    let service = FakeService::running();
+    service.stop().unwrap();
+    let runner = FakeRunner::healthy();
+    runner.health_fails.set(true);
+
+    crate::execute_action(AdminAction::Start, &paths, &service, &runner).unwrap();
+
+    assert_eq!(runner.health_checks.get(), 0);
 }
 
 #[test]
@@ -888,6 +906,33 @@ fn log_metrics_apply_does_not_wait_for_http_health() {
 
     assert_eq!(fixture.live_config(), LOG_METRICS_CONFIG);
     assert_eq!(fixture.runner.health_checks.get(), 0);
+}
+
+#[test]
+fn repair_with_log_metrics_does_not_wait_for_http_health() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    fs::create_dir_all(paths.config.parent().unwrap()).unwrap();
+    let helper = root.path().join("dns_relay_admin");
+    let resolver = root.path().join("dns_relay");
+    fs::write(&helper, "helper").unwrap();
+    fs::write(&resolver, "resolver").unwrap();
+    let service = FakeService::running();
+    let runner = FakeRunner::healthy();
+    runner.health_fails.set(true);
+
+    crate::execute_action(
+        AdminAction::Repair {
+            expected_binary_sha256: crate::sha256_file(&resolver).unwrap(),
+            config_toml: LOG_METRICS_CONFIG.into(),
+        },
+        &paths,
+        &service,
+        &runner,
+    )
+    .unwrap();
+
+    assert_eq!(runner.health_checks.get(), 0);
 }
 
 #[test]
