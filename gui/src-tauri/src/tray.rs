@@ -50,16 +50,18 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
 
 fn handle_menu(app: &AppHandle, event: tauri::menu::MenuEvent) {
     match intent(event.id().as_ref()) {
-        Some(TrayIntent::Open) => {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }
+        Some(TrayIntent::Open) => show(app),
         Some(TrayIntent::Toggle) => toggle_service(),
         Some(TrayIntent::Restart) => run_service(ServiceAction::Restart),
         Some(TrayIntent::Quit) => app.exit(0),
         None => {}
+    }
+}
+
+pub(crate) fn show(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
     }
 }
 

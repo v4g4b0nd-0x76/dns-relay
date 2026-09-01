@@ -20,3 +20,7 @@ commands=$(make -n -C "$root" gui-mac)
 [[ $commands == *'cargo build --release --target aarch64-apple-darwin --bin dns_relay --bin dns_relay_admin'* ]]
 [[ $commands == *'stage_gui_sidecars.sh aarch64-apple-darwin'* ]]
 [[ $commands == *'npm run tauri build'* ]]
+
+commands=$(make -n -C "$root" gui-mac-install-test)
+[[ $commands == *'sudo /usr/bin/ditto "target/release/bundle/macos/DNS Relay.app" "/Applications/DNS Relay.app"'* ]]
+[[ $commands == *'npm test -- --workers=1'* ]]

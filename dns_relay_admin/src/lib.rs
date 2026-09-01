@@ -227,6 +227,16 @@ fn execute_action(
     service: &impl AdminService,
     runner: &impl CommandRunner,
 ) -> Result<String, AdminError> {
+    execute_action_with_helper(action, paths, service, runner, &std::env::current_exe()?)
+}
+
+fn execute_action_with_helper(
+    action: AdminAction,
+    paths: &PlatformPaths,
+    service: &impl AdminService,
+    runner: &impl CommandRunner,
+    helper: &Path,
+) -> Result<String, AdminError> {
     match action {
         AdminAction::Status => Ok(match service.status()? {
             ServiceStatus::Running => "running",
@@ -239,7 +249,7 @@ fn execute_action(
             expected_binary_sha256,
         } => {
             let config_toml = Zeroizing::new(config_toml);
-            verify_bundled_resolver(&expected_binary_sha256)?;
+            verify_bundled_resolver(helper, &expected_binary_sha256)?;
             service
                 .install(&config_toml)
                 .map_err(|error| service_error(error, service))?;
@@ -249,7 +259,7 @@ fn execute_action(
         AdminAction::Update {
             expected_binary_sha256,
         } => {
-            verify_bundled_resolver(&expected_binary_sha256)?;
+            verify_bundled_resolver(helper, &expected_binary_sha256)?;
             service
                 .update()
                 .map_err(|error| service_error(error, service))?;
@@ -261,7 +271,7 @@ fn execute_action(
             config_toml,
         } => {
             let config_toml = Zeroizing::new(config_toml);
-            verify_bundled_resolver(&expected_binary_sha256)?;
+            verify_bundled_resolver(helper, &expected_binary_sha256)?;
             service
                 .repair(&config_toml)
                 .map_err(|error| service_error(error, service))?;
@@ -339,12 +349,8 @@ fn service_error(error: AdminError, service: &impl AdminService) -> AdminError {
     }
 }
 
-fn verify_bundled_resolver(expected: &str) -> Result<(), AdminError> {
-    let helper = std::env::current_exe()?;
-    let resolver = helper
-        .parent()
-        .ok_or_else(|| AdminError::Operation("admin helper path has no parent".into()))?
-        .join("dns_relay");
+fn verify_bundled_resolver(helper: &Path, expected: &str) -> Result<(), AdminError> {
+    let resolver = platform::bundled_resolver(helper)?;
     verify_sha256_file(&resolver, expected)
 }
 

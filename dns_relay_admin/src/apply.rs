@@ -132,11 +132,11 @@ fn backup_config(paths: &PlatformPaths) -> Result<(), AdminError> {
 
 fn write_staged(path: &Path, content: &str) -> Result<(), AdminError> {
     let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
+    options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
     let mut file = options.open(path)?;
     file.write_all(content.as_bytes())?;

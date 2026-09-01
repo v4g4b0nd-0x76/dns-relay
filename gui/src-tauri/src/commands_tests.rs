@@ -6,7 +6,7 @@ use crate::{
         CommandError, ServiceAction, ServiceState, bundled_paths_from_exe,
         config_change_requires_restart, ensure_installation_current_from_paths,
         materialize_for_apply, migrate_legacy_secrets, parse_config, read_bounded_lines,
-        validate_draft, version_outputs_match,
+        store_relay_key, validate_draft,
     },
     secrets::{FallbackVault, SecretId, SecretManager, SecretStore},
     state::draft_for_install_files,
@@ -124,19 +124,6 @@ fn development_sidecars_are_fixed_siblings_of_the_gui() {
 
     assert_eq!(helper, std::path::Path::new("/tmp/dns_relay_admin"));
     assert_eq!(resolver, std::path::Path::new("/tmp/dns_relay"));
-}
-
-#[test]
-fn apply_version_guard_requires_exact_nonempty_output() {
-    assert!(version_outputs_match(
-        "dns-relay 1.6.10\n",
-        "dns-relay 1.6.10"
-    ));
-    assert!(!version_outputs_match(
-        "dns-relay 1.6.11",
-        "dns-relay 1.6.10"
-    ));
-    assert!(!version_outputs_match("", ""));
 }
 
 #[test]
@@ -341,6 +328,23 @@ fn apply_materializes_a_copy_without_exposing_secrets_in_the_draft() {
     assert_eq!(
         materialized.relay_conf.relay_instances[0].relay_key,
         "rk_private"
+    );
+}
+
+#[test]
+fn custom_relay_key_is_validated_and_stored_in_the_vault() {
+    let root = tempdir().unwrap();
+    let vault = FallbackVault::new(root.path().join("vault.json"), "passphrase").unwrap();
+    let store = SecretManager::<crate::secrets_tests::MemoryBackend>::encrypted_fallback(vault);
+    let key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+    let reference = store_relay_key(key, &store).unwrap();
+    let id = SecretId::new(reference.strip_prefix("vault://").unwrap()).unwrap();
+
+    assert_eq!(store.get(&id).unwrap().expose(), key.as_bytes());
+    assert_eq!(
+        store_relay_key("invalid", &store).unwrap_err().code,
+        "invalid_relay_key"
     );
 }
 

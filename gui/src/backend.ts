@@ -29,6 +29,7 @@ export interface Backend {
   parseBlocklist(content: string): Promise<string[]>;
   exportConfig(draft: DnsRelayConfig, plaintext: boolean): Promise<string>;
   generateSecret(kind: "relay" | "obfs"): Promise<string>;
+  storeRelaySecret(value: string): Promise<string>;
   revealSecret(reference: string): Promise<string>;
   deleteSecret(reference: string): Promise<void>;
 }
@@ -229,6 +230,19 @@ export class FixtureBackend implements Backend {
     return reference;
   }
 
+  async storeRelaySecret(value: string): Promise<string> {
+    let decoded: string;
+    try {
+      decoded = atob(value);
+    } catch {
+      throw new Error("Relay key must be valid base64");
+    }
+    if (decoded.length !== 32) throw new Error("Relay key must decode to 32 bytes");
+    const reference = `vault://relay.fixture.${++this.#secretCounter}`;
+    this.#secrets.set(reference, value);
+    return reference;
+  }
+
   async revealSecret(reference: string): Promise<string> {
     const value = this.#secrets.get(reference);
     if (!value) throw new Error("secret is missing");
@@ -305,6 +319,10 @@ export class TauriBackend implements Backend {
 
   generateSecret(kind: "relay" | "obfs"): Promise<string> {
     return invoke("generate_secret", { kind });
+  }
+
+  storeRelaySecret(value: string): Promise<string> {
+    return invoke("store_relay_secret", { value });
   }
 
   revealSecret(reference: string): Promise<string> {

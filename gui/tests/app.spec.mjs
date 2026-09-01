@@ -467,6 +467,21 @@ test("relay secrets stay vaulted and probes report latency", async ({ page }) =>
   await expect(page.getByText("fixture-secret-1", { exact: true })).toBeVisible();
 });
 
+test("existing relay keys can be stored in the vault", async ({ page }) => {
+  const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  await openApp(page);
+  await page.locator("[data-target='relay']").click();
+  await page.getByRole("button", { name: "Add relay" }).click();
+  await page.getByRole("button", { name: "Set key" }).click();
+  await page.getByRole("dialog", { name: "Set relay key" }).getByRole("textbox", { name: "Relay key" }).fill(key);
+  await page.getByRole("button", { name: "Store key" }).click();
+  await expect(page.locator("[data-toast]")).toContainText("stored in Keychain");
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Reveal relay key" }).click();
+  await expect(page.getByText(key, { exact: true })).toBeVisible();
+});
+
 test("apply locks secret replacement before delayed validation", async ({ page }) => {
   await page.setViewportSize({ width: 420, height: 720 });
   await page.goto(`${production}/?fixture=validation-delay`);

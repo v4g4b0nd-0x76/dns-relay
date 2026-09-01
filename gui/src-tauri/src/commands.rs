@@ -4,7 +4,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, atomic::Ordering::Relaxed},
+    sync::{Arc, Mutex, atomic::Ordering::Relaxed},
     time::Instant,
 };
 
@@ -21,6 +21,8 @@ use crate::{
     secrets::{SecretId, SecretStore},
     state::{BackendState, starter_draft},
 };
+
+static ADMIN_OPERATION: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -494,6 +496,32 @@ pub async fn generate_secret(
 }
 
 #[tauri::command]
+pub async fn store_relay_secret(
+    state: State<'_, BackendState>,
+    value: String,
+) -> Result<String, CommandError> {
+    let value = Zeroizing::new(value);
+    let secrets = Arc::clone(&state.secrets);
+    tauri::async_runtime::spawn_blocking(move || store_relay_key(&value, secrets.as_ref()))
+        .await
+        .map_err(|error| CommandError::new("secret_failed", error.to_string()))?
+}
+
+pub(crate) fn store_relay_key(
+    value: &str,
+    store: &impl SecretStore,
+) -> Result<String, CommandError> {
+    dns_relay::relay::load_key_from_str(value)
+        .map_err(|error| CommandError::new("invalid_relay_key", error.to_string()))?;
+    let id = SecretId::new(format!("relay.{}", Uuid::new_v4()))
+        .map_err(|error| CommandError::new("secret_failed", error.to_string()))?;
+    store
+        .put(&id, value.as_bytes())
+        .map_err(|error| CommandError::new("secret_failed", error.to_string()))?;
+    Ok(format!("vault://{}", id.as_str()))
+}
+
+#[tauri::command]
 pub async fn reveal_secret(
     state: State<'_, BackendState>,
     reference: String,
@@ -711,6 +739,9 @@ fn request_admin_with_paths(
     paths: &PlatformPaths,
     helper: &Path,
 ) -> Result<AdminResponse, CommandError> {
+    let _operation = ADMIN_OPERATION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let id = Uuid::new_v4();
     let mut request = AdminRequest { id, action };
     let write_result = paths.write_request(&request);
@@ -810,11 +841,7 @@ pub(crate) fn ensure_installation_current_from_paths(
     compare_binary_hash(bundled_resolver, installed_resolver, "resolver")
 }
 
-fn compare_binary_hash(
-    bundled: &Path,
-    installed: &Path,
-    name: &str,
-) -> Result<(), CommandError> {
+fn compare_binary_hash(bundled: &Path, installed: &Path, name: &str) -> Result<(), CommandError> {
     require_sidecar(bundled, name)?;
     require_sidecar(installed, &format!("installed {name}"))?;
     let bundled_hash = dns_relay_admin::sha256_file(bundled).map_err(admin_error)?;
@@ -824,34 +851,11 @@ fn compare_binary_hash(
     } else {
         Err(CommandError::new(
             "update_required",
-            format!("Bundled {name} does not match installed {name}; run Repair to update DNS Relay"),
+            format!(
+                "Bundled {name} does not match installed {name}; run Repair to update DNS Relay"
+            ),
         ))
     }
-}
-
-fn binary_version(path: &Path) -> Result<String, CommandError> {
-    let output = Command::new(path)
-        .arg("--version")
-        .output()
-        .map_err(|error| CommandError::new("version_check_failed", error.to_string()))?;
-    if !output.status.success() {
-        return Err(CommandError::new(
-            "version_check_failed",
-            format!(
-                "{} --version failed ({}): {}",
-                path.display(),
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-        ));
-    }
-    String::from_utf8(output.stdout)
-        .map(|version| version.trim().to_string())
-        .map_err(|error| CommandError::new("version_check_failed", error.to_string()))
-}
-
-pub(crate) fn version_outputs_match(bundled: &str, installed: &str) -> bool {
-    bundled.trim() == installed.trim() && !bundled.trim().is_empty()
 }
 
 pub(crate) fn current_service_state() -> Result<ServiceState, CommandError> {

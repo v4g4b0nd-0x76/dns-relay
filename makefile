@@ -1,4 +1,4 @@
-.PHONY: build build-gnu build-musl build-mac gui-mac test run caps patch minor major
+.PHONY: build build-gnu build-musl build-mac gui-mac gui-mac-install-test test run caps patch minor major
 
 # Which workspace binary to operate on. Override per-invocation, e.g.:
 #   make build bin=resolver_proxy
@@ -17,6 +17,10 @@ gui-mac:
 	@cargo build --release --target aarch64-apple-darwin --bin dns_relay --bin dns_relay_admin
 	@./scripts/stage_gui_sidecars.sh aarch64-apple-darwin
 	@cd gui && npm run tauri build
+
+gui-mac-install-test: gui-mac
+	@sudo /usr/bin/ditto "target/release/bundle/macos/DNS Relay.app" "/Applications/DNS Relay.app"
+	@cd gui && npm test -- --workers=1
 test:
 	@cargo test --bin $(bin)
 run: build

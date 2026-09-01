@@ -732,6 +732,8 @@ impl crate::AdminService for FakeService {
 fn admin_dispatch_maps_only_closed_service_actions() {
     let root = tempdir().unwrap();
     let paths = PlatformPaths::for_test(root.path());
+    fs::create_dir_all(paths.config.parent().unwrap()).unwrap();
+    fs::write(&paths.config, LOG_METRICS_CONFIG).unwrap();
     let service = FakeService::running();
     let runner = FakeRunner::healthy();
 
@@ -878,6 +880,16 @@ fn staging_write_failure_does_not_replace_live_config() {
 }
 
 #[test]
+fn stale_staged_config_does_not_block_the_next_save() {
+    let fixture = ApplyFixture::running_with_config("old");
+    fs::write(staging_path(&fixture.paths.config), "interrupted save").unwrap();
+
+    fixture.apply(VALID_CONFIG, false).unwrap();
+
+    assert_eq!(fixture.live_config(), VALID_CONFIG);
+}
+
+#[test]
 fn restart_failure_restores_config_and_running_state() {
     let fixture = ApplyFixture::running_with_config("old");
     fixture.service.restart_fails.set(true);
@@ -912,16 +924,16 @@ fn log_metrics_apply_does_not_wait_for_http_health() {
 fn repair_with_log_metrics_does_not_wait_for_http_health() {
     let root = tempdir().unwrap();
     let paths = PlatformPaths::for_test(root.path());
-    fs::create_dir_all(paths.config.parent().unwrap()).unwrap();
-    let helper = root.path().join("dns_relay_admin");
-    let resolver = root.path().join("dns_relay");
+    let helper = root.path().join("bundle/dns_relay_admin");
+    let resolver = root.path().join("bundle/dns_relay");
+    fs::create_dir_all(helper.parent().unwrap()).unwrap();
     fs::write(&helper, "helper").unwrap();
     fs::write(&resolver, "resolver").unwrap();
     let service = FakeService::running();
     let runner = FakeRunner::healthy();
     runner.health_fails.set(true);
 
-    crate::execute_action(
+    crate::execute_action_with_helper(
         AdminAction::Repair {
             expected_binary_sha256: crate::sha256_file(&resolver).unwrap(),
             config_toml: LOG_METRICS_CONFIG.into(),
@@ -929,10 +941,40 @@ fn repair_with_log_metrics_does_not_wait_for_http_health() {
         &paths,
         &service,
         &runner,
+        &helper,
     )
     .unwrap();
 
     assert_eq!(runner.health_checks.get(), 0);
+}
+
+#[test]
+fn install_verifies_bundled_resolver_after_installed_files_are_removed() {
+    let root = tempdir().unwrap();
+    let paths = PlatformPaths::for_test(root.path());
+    let helper = root.path().join("bundle/dns_relay_admin");
+    let resolver = root.path().join("bundle/dns_relay");
+    fs::create_dir_all(helper.parent().unwrap()).unwrap();
+    fs::write(&helper, "helper").unwrap();
+    fs::write(&resolver, "resolver").unwrap();
+    let service = FakeService::running();
+    service.stop().unwrap();
+    let runner = FakeRunner::healthy();
+
+    let result = crate::execute_action_with_helper(
+        AdminAction::Install {
+            expected_binary_sha256: crate::sha256_file(&resolver).unwrap(),
+            config_toml: LOG_METRICS_CONFIG.into(),
+        },
+        &paths,
+        &service,
+        &runner,
+        &helper,
+    )
+    .unwrap();
+
+    assert_eq!(result, "installed");
+    assert_eq!(service.state.get(), ServiceStatus::Running);
 }
 
 #[test]

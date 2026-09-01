@@ -7,6 +7,7 @@ type SecretKind = "relay" | "obfs";
 export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
   let dialogTrigger: HTMLElement | null = null;
   let toastTimer: number | undefined;
+  let relayKeyBusy = false;
 
   root.addEventListener("click", async (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
@@ -35,6 +36,8 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
     if (action === "add-relay") editDraft((draft) => { draft.relay_conf.relay_instances.push({ relay_url: "https://", transport: "direct", relay_key: "" }); });
     if (action === "delete-relay") await deleteRelay(Number(button.dataset.index));
     if (action === "generate-relay-secret") await generateRelaySecret(Number(button.dataset.index));
+    if (action === "set-relay-secret") openRelayKeyDialog(button, Number(button.dataset.index));
+    if (action === "store-relay-secret") await storeRelaySecret();
     if (action === "reveal-relay-secret") await revealRelaySecret(Number(button.dataset.index));
     if (action === "test-relay") await testRelay(Number(button.dataset.index));
     if (action === "generate-obfs-secret") await generateObfsSecret();
@@ -65,7 +68,7 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
   });
 
   root.addEventListener("close", (event) => {
-    if ((event.target as HTMLElement).matches("[data-rule-dialog]")) dialogTrigger?.focus();
+    if ((event.target as HTMLElement).matches("[data-rule-dialog], [data-relay-key-dialog]")) dialogTrigger?.focus();
   }, true);
 
   async function toggleService() {
@@ -300,6 +303,46 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
     });
   }
 
+  function openRelayKeyDialog(trigger: HTMLElement, index: number) {
+    const dialog = root.querySelector<HTMLDialogElement>("[data-relay-key-dialog]");
+    const input = dialog?.querySelector<HTMLInputElement>("[name='relay-key']");
+    if (!dialog || !input) return;
+    dialogTrigger = trigger;
+    dialog.dataset.index = String(index);
+    input.value = "";
+    const error = dialog.querySelector<HTMLElement>("[data-relay-key-error]");
+    if (error) error.textContent = "";
+    dialog.showModal();
+    input.focus();
+  }
+
+  async function storeRelaySecret() {
+    if (relayKeyBusy) return;
+    const dialog = root.querySelector<HTMLDialogElement>("[data-relay-key-dialog]");
+    const input = dialog?.querySelector<HTMLInputElement>("[name='relay-key']");
+    const error = dialog?.querySelector<HTMLElement>("[data-relay-key-error]");
+    const index = Number(dialog?.dataset.index);
+    const relay = store.get().app.draft?.relay_conf.relay_instances[index];
+    if (!dialog || !input || !relay) return;
+    relayKeyBusy = true;
+    try {
+      const reference = await backend.storeRelaySecret(input.value.trim());
+      const replaced = relay.relay_key || undefined;
+      store.update((state) => {
+        state.generatedSecrets.push(reference);
+        if (replaced && !state.generatedSecrets.includes(replaced) && !state.pendingSecretDeletes.includes(replaced)) {
+          state.pendingSecretDeletes.push(replaced);
+        }
+      });
+      editDraft((draft) => { draft.relay_conf.relay_instances[index].relay_key = reference; });
+      notify("Relay key stored in Keychain");
+    } catch (failure) {
+      if (error) error.textContent = message(failure);
+    } finally {
+      relayKeyBusy = false;
+    }
+  }
+
   async function generateObfsSecret() {
     await generateSecret("obfs", undefined, (reference) => {
       editDraft((draft) => { draft.obfs_conf.keys.push(reference); });
@@ -511,7 +554,7 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
   }
 
   function closeDialog() {
-    root.querySelector<HTMLDialogElement>("[data-rule-dialog]")?.close();
+    root.querySelector<HTMLDialogElement>("dialog[open]")?.close();
   }
 
   function notify(text: string) {
