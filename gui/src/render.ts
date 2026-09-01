@@ -122,14 +122,17 @@ function renderDashboard(state: ShellState) {
   const draft = state.app.draft;
   const metrics = state.observability.metrics.value;
   const health = !stopped && state.observability.health.value === true;
-  const healthLabel = stopped ? "Service stopped" : health ? "Healthy" : service === "error" ? "Service needs attention" : "Health unavailable";
+  const telemetryRefused = state.observability.health.errorKind === "connection_refused";
+  const healthLabel = stopped ? "Service stopped" : health ? "Healthy" : service === "error" ? "Service needs attention" : telemetryRefused ? "Running" : "Health unavailable";
+  const showHealthWarning = state.observability.health.error && state.observability.health.errorKind !== "connection_refused";
+  const showMetricsWarning = state.observability.metrics.error && state.observability.metrics.errorKind !== "connection_refused";
   const cacheHit = metrics?.total_req
     ? `${Math.round((metrics.cached_count / metrics.total_req) * 100)}%`
     : "—";
   return `<section class="view" data-view="dashboard">${heading("Control", "Dashboard", "Service and resolver state at a glance")}
     ${renderWarnings(state)}
-    ${state.observability.health.error && (!stopped || state.observability.health.errorKind !== "connection_refused") ? `<div class="notice warning">Health unavailable: ${escapeHtml(state.observability.health.error)}</div>` : ""}
-    ${state.observability.metrics.error && (!stopped || state.observability.metrics.errorKind !== "connection_refused") ? `<div class="notice warning">Metrics unavailable: ${escapeHtml(state.observability.metrics.error)}</div>` : ""}
+    ${showHealthWarning ? `<div class="notice warning">Health unavailable: ${escapeHtml(state.observability.health.error!)}</div>` : ""}
+    ${showMetricsWarning ? `<div class="notice warning">Metrics unavailable: ${escapeHtml(state.observability.metrics.error!)}</div>` : ""}
     <div class="card hero"><button class="power-button" data-power data-state="${service}" data-action="toggle-service" data-focus="power" aria-label="${action} DNS Relay" title="${action} DNS Relay" ${state.applying || service === "not_installed" ? "disabled" : ""}><i data-lucide="power"></i></button><div><p class="eyebrow">Service status</p><h2 class="service-title" data-service-state>${title(service)}</h2><span class="${health ? "healthy" : "muted"}">${healthLabel}</span><div class="detail-list"><div><span>Listener</span><strong>${escapeHtml(draft?.dns_target ?? "Unavailable")}</strong></div><div><span>Mode</span><strong>${draft?.secure_only ? "Secure only" : "Standard"}</strong></div><div><span>Transport</span><strong>Configured upstreams</strong></div><div><span>Changes</span><strong>${state.dirty ? "Pending" : "Saved"}</strong></div></div></div></div>
     <div class="metrics">${metric("Requests", metrics?.total_req.toLocaleString() ?? "—", "arrow-up-right")}${metric("Cache hit", cacheHit, "database")}${metric("Failures", metrics?.failed_count.toLocaleString() ?? "—", "triangle-alert")}${metric("Timeouts", metrics?.timeout_count.toLocaleString() ?? "—", "timer")}</div>
     <div class="card activity-preview" data-dashboard-activity>${emptyState("activity", "No recent events", "Service logs and query history will appear here once DNS Relay starts.", '<button class="button" data-action="navigate" data-view-target="activity">Open activity</button>')}</div>

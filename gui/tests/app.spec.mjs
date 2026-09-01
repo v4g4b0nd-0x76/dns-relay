@@ -71,11 +71,12 @@ test("stopped service keeps non-connection telemetry errors visible", async ({ p
   await expect(page.getByText(/Metrics unavailable:/)).toBeVisible();
 });
 
-test("stopped service suppresses connection-refused endpoint noise", async ({ page }) => {
+test("service state suppresses connection-refused endpoint noise", async ({ page }) => {
   await page.setViewportSize({ width: 420, height: 720 });
   await page.goto(`${production}/?fixture=connection-refused`);
   await expect(page.locator("[data-service-state]")).toHaveText("Running");
-  await expect(page.getByText(/Health unavailable: Connection refused/)).toBeVisible();
+  await expect(page.getByText(/unavailable:/)).toHaveCount(0);
+  await expect(page.getByText("Health unavailable", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Stop DNS Relay" }).click();
   await expect(page.locator("[data-service-state]")).toHaveText("Stopped");
   await expect(page.getByText("Service stopped", { exact: true })).toBeVisible();
