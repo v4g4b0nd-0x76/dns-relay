@@ -238,6 +238,17 @@ test("relay settings separate switches from text fields on desktop", async ({ pa
   expect(layout).toEqual({ columns: 2, toggles: 2, fields: 2 });
 });
 
+test("activity data regions use desktop width and stack compactly", async ({ page }) => {
+  for (const [width, expectedColumns] of [[420, 1], [1024, 2]]) {
+    await openApp(page, width, 720);
+    await page.locator("[data-target='activity']").click();
+    const columns = await page.locator(".activity-grid").evaluate((grid) => (
+      getComputedStyle(grid).gridTemplateColumns.split(" ").length
+    ));
+    expect(columns).toBe(expectedColumns);
+  }
+});
+
 test("compact dashboard keeps flat cards and the horizontal service summary", async ({ page }) => {
   await openApp(page);
 
