@@ -130,7 +130,7 @@ function renderDashboard(state: ShellState) {
   const cacheHit = metrics?.total_req
     ? `${Math.round((metrics.cached_count / metrics.total_req) * 100)}%`
     : "—";
-  return `<section class="view" data-view="dashboard">${heading("Control", "Dashboard", "Service and resolver state at a glance")}
+  return `<section class="view dashboard-view" data-view="dashboard">${heading("Control", "Dashboard", "Service and resolver state at a glance")}
     ${renderWarnings(state)}
     ${showHealthWarning ? `<div class="notice warning">Health unavailable: ${escapeHtml(state.observability.health.error!)}</div>` : ""}
     ${showMetricsWarning ? `<div class="notice warning">Metrics unavailable: ${escapeHtml(state.observability.metrics.error!)}</div>` : ""}

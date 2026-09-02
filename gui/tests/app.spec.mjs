@@ -166,6 +166,25 @@ test("dashboard fits the default desktop height without initial scrolling", asyn
   expect(layout.scrollHeight).toBeLessThanOrEqual(layout.clientHeight + 1);
 });
 
+test("dashboard service summary stays compact at both layouts", async ({ page }) => {
+  for (const width of [420, 1024]) {
+    await openApp(page, width, 720);
+    const hero = await page.locator("[data-view='dashboard'] .hero").boundingBox();
+    expect(hero).not.toBeNull();
+    expect(hero.height).toBeLessThan(width < 760 ? 230 : 200);
+  }
+});
+
+test("setup content fits above compact navigation", async ({ page }) => {
+  await page.setViewportSize({ width: 420, height: 720 });
+  await page.goto(`${production}/?fixture=first-launch`);
+  const setup = await page.locator("[data-view='setup']").boundingBox();
+  const nav = await page.getByRole("navigation", { name: "Primary" }).boundingBox();
+  expect(setup).not.toBeNull();
+  expect(nav).not.toBeNull();
+  expect(setup.y + setup.height).toBeLessThanOrEqual(nav.y - 8);
+});
+
 test("boolean config fields render as app switches", async ({ page }) => {
   await openApp(page);
   await page.locator("[data-target='settings']").click();

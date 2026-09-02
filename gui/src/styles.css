@@ -182,6 +182,41 @@
   white-space: nowrap;
 }
 
+.dashboard-view .hero {
+  grid-template-columns: 104px minmax(0, 1fr);
+  padding: 14px;
+}
+
+.dashboard-view .power-button {
+  width: 92px;
+  height: 92px;
+}
+
+.dashboard-view .power-button svg {
+  width: 34px;
+  height: 34px;
+}
+
+.dashboard-view .service-title {
+  margin: 0 0 4px;
+  font-size: 26px;
+  line-height: 1.15;
+}
+
+.dashboard-view .detail-list {
+  gap: 6px 16px;
+  margin-top: 10px;
+}
+
+.dashboard-view .metrics,
+.dashboard-view .activity-preview {
+  margin-top: 0;
+}
+
+.setup {
+  margin-top: 0;
+}
+
 .check-row {
   min-width: 0;
 }
@@ -429,6 +464,38 @@
 
   .history-fields {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-view .hero {
+    grid-template-columns: 92px minmax(0, 1fr);
+    padding: 14px;
+  }
+
+  .dashboard-view .power-button {
+    width: 82px;
+    height: 82px;
+  }
+
+  .setup {
+    gap: 8px;
+  }
+
+  .setup > img {
+    width: 64px;
+    height: 64px;
+  }
+
+  .setup h1 {
+    margin-top: 0;
+  }
+
+  .setup-steps {
+    gap: 6px;
+    margin: 4px 0;
+  }
+
+  .setup-step {
+    padding: 10px;
   }
 }
 
