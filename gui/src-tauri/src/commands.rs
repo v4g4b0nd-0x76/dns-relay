@@ -418,7 +418,7 @@ pub fn read_logs(limit: u16) -> Result<Vec<String>, CommandError> {
         use dns_relay_admin::platform::linux::LinuxServiceManager;
 
         let command = LinuxServiceManager::new(paths).journal_command(usize::from(limit));
-        return read_command_lines(&command, usize::from(limit));
+        read_command_lines(&command, usize::from(limit))
     }
     #[cfg(not(target_os = "linux"))]
     read_bounded_lines(
