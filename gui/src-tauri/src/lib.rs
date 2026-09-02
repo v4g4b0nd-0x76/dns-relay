@@ -61,6 +61,8 @@ pub fn run() {
         {
             tray::show(app);
         }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app, event);
     });
 }
 
