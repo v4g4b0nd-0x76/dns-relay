@@ -378,6 +378,16 @@ test("resolver discovery keeps switches and text fields aligned", async ({ page 
   await expect(page.locator("[data-resolver-options] .field-column input, [data-resolver-options] .field-column textarea")).toHaveCount(3);
 });
 
+test("resolver discovery is a labeled aligned section", async ({ page }) => {
+  await openApp(page, 1024, 768);
+  await page.locator("[data-target='resolvers']").click();
+  await expect(page.locator("[data-resolver-options] .section-label > strong")).toHaveText("Discovery");
+  const columns = await page.locator("[data-resolver-options]").evaluate((card) =>
+    getComputedStyle(card).gridTemplateColumns.split(" ").length,
+  );
+  expect(columns).toBe(2);
+});
+
 test("settings groups keep switches and text fields aligned", async ({ page }) => {
   await openApp(page, 1440);
   await page.locator("[data-target='settings']").click();

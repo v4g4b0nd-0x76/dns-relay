@@ -313,6 +313,29 @@
   grid-column: 1 / -1;
 }
 
+.resolver-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) auto;
+}
+
+.resolver-toolbar label {
+  min-width: 0;
+}
+
+.resolver-options {
+  align-items: start;
+}
+
+.section-label {
+  display: grid;
+  gap: 2px;
+}
+
+.section-label span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .option-column,
 .field-column {
   display: grid;
@@ -452,6 +475,18 @@
 
   .split-form {
     grid-template-columns: 1fr;
+  }
+
+  .resolver-toolbar {
+    grid-template-columns: 1fr auto;
+  }
+
+  .resolver-toolbar .security-toggle {
+    grid-column: 1 / -1;
+  }
+
+  .resolver-toolbar .button {
+    align-self: stretch;
   }
 
   .settings-grid {
