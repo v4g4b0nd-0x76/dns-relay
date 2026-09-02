@@ -4,6 +4,7 @@ import {
   ArrowDown,
   ArrowUp,
   CircleDotDashed,
+  ChevronDown,
   Copy,
   Database,
   Download,
@@ -26,7 +27,7 @@ import {
 
 import appMark from "../src-tauri/icons/icon.png";
 import configFields from "./config-fields.json";
-import type { ServiceState, ViewId } from "./types";
+import type { ViewId } from "./types";
 import type { ShellState } from "./store";
 
 const views: Array<[ViewId, string, string]> = [
@@ -44,6 +45,7 @@ const icons = {
   ArrowDown,
   ArrowUp,
   CircleDotDashed,
+  ChevronDown,
   Copy,
   Database,
   Download,
@@ -220,24 +222,14 @@ function renderActivity(state: ShellState) {
 
 function renderSettings(state: ShellState) {
   const draft = state.app.draft;
-  const fixture = {
-    normal: "All independent data sources available",
-    loading: '<span class="spinner" aria-label="Loading"></span>',
-    empty: "No installed service detected",
-    warning: "Metrics unavailable; service status remains available",
-    error: "Service failed. Open logs or run repair.",
-  }[state.fixtureState];
   const history = draft?.record_history_conf;
   const obfs = draft?.obfs_conf;
   return `<section class="view settings-view" data-view="settings">${heading("System", "Settings", "Listener, service, updates, and complete configuration")}${renderWarnings(state)}
-    <div class="card split-form" data-settings-core><div class="option-column">${checkField("Hot reload", "hotreload_conf.enable", draft?.hotreload_conf.enable)}${checkField("VPN DNS reassertion", "vpn_reassertion", draft?.vpn_reassertion)}${checkField("Initialize TLS roots", "init_tls", draft?.init_tls)}</div><div class="field-column"><label>Listener address<input data-config-path="dns_target" value="${escapeHtml(draft?.dns_target ?? "")}"></label><label>Hot reload interval (ms)<input type="number" min="1" data-config-path="hotreload_conf.poll_interval_ms" data-value-type="number" value="${draft?.hotreload_conf.poll_interval_ms ?? 1000}"></label></div></div>
-    <div class="card split-form" data-settings-metrics><p class="eyebrow">Metrics and history</p><div class="option-column">${checkField("Metrics endpoint", "metric_conf.enable", draft?.metric_conf.enable)}${checkField("Record query history", "record_history", draft?.record_history)}</div><div class="field-column metrics-fields"><label>Metrics output<select data-config-path="metric_conf.report_type"><option value="log" ${draft?.metric_conf.report_type === "log" ? "selected" : ""}>Log</option><option value="http" ${draft?.metric_conf.report_type === "http" ? "selected" : ""}>HTTP</option></select></label><label>Metrics interval (seconds)<input type="number" min="1" data-config-path="metric_conf.report_interval" data-value-type="number" value="${draft?.metric_conf.report_interval ?? 30}"></label></div><div class="field-column history-fields span-2"><label>History matched domains<textarea data-config-path="record_history_conf.matched_list" data-value-type="lines">${escapeHtml(history?.matched_list.join("\n") ?? "")}</textarea></label><label>History line retention<input type="number" min="1" data-config-path="record_history_conf.lines" data-value-type="number" value="${history?.lines ?? 1000}"></label></div></div>
-    <div class="card split-form" data-settings-obfs><p class="eyebrow">Obfuscated listener</p><div class="option-column">${checkField("Enable obfuscation", "obfs_conf.enable", obfs?.enable)}<div class="key-tools"><span class="muted">Keys</span><button class="button" data-action="generate-obfs-secret">Generate obfuscation key</button></div>${(obfs?.keys ?? []).map((key, index) => `<div class="secret-line"><span>${state.revealedSecrets[key] ? escapeHtml(state.revealedSecrets[key]) : "••••••••••••"}</span><div class="row-actions">${iconAction(state.revealedSecrets[key] ? "eye-off" : "eye", `Reveal obfuscation key ${index + 1}`, "reveal-obfs-secret", `data-index="${index}"`)}${iconAction("trash-2", `Delete obfuscation key ${index + 1}`, "delete-obfs-secret", `data-index="${index}"`)}</div></div>`).join("")}</div><div class="field-column"><label>Bind address<input data-config-path="obfs_conf.bind_addr" value="${escapeHtml(obfs?.bind_addr ?? "")}"></label></div></div>
-    <div class="settings-grid">
-      <div class="card compact-card" data-settings-service><div class="section-heading"><div><p class="eyebrow">Service</p><h2>${title(state.app.service)}</h2></div><div class="toolbar service-actions"><button class="button" data-action="service-action" data-service-action="restart">Restart</button><button class="button" data-action="service-action" data-service-action="repair">Repair</button><button class="button danger-button" data-action="service-action" data-service-action="uninstall">Uninstall</button></div></div></div>
-      <div class="card compact-card" data-settings-shared><p class="eyebrow">Shared states</p><div class="state-switches">${["normal", "loading", "empty", "warning", "error"].map((name) => `<button class="button ghost" data-action="fixture-state" data-state="${name}">${title(name as ServiceState)}</button>`).join("")}</div><div class="fixture" data-state="${state.fixtureState}">${fixture}</div></div>
-      <div class="card span-2" data-settings-advanced><div class="section-heading"><div><p class="eyebrow">Advanced</p><h2>Raw TOML</h2></div><span class="badge">${state.rawError ? "Invalid" : "Validated on import"}</span></div><textarea aria-label="Raw TOML" data-raw-toml data-focus="raw-toml" placeholder="Load or paste TOML">${escapeHtml(state.rawToml)}</textarea>${state.rawError ? `<p class="field-error" role="alert">${escapeHtml(state.rawError)}</p>` : ""}<div class="toolbar config-actions"><button class="button" data-action="load-raw">Load draft</button><button class="button primary" data-action="validate-raw">Validate and use</button><label class="button">Import<input class="sr-only" type="file" accept=".toml,text/plain" data-config-import></label><button class="button" data-action="export-safe">Export safely</button><button class="button danger-button" data-action="export-plaintext">Export plaintext…</button></div></div>
-    </div>
+    <div class="card split-form" data-settings-core><div class="section-label span-2"><strong>Core service</strong><span>Listener and runtime behavior</span></div><div class="option-column">${checkField("Hot reload", "hotreload_conf.enable", draft?.hotreload_conf.enable)}${checkField("VPN DNS reassertion", "vpn_reassertion", draft?.vpn_reassertion)}${checkField("Initialize TLS roots", "init_tls", draft?.init_tls)}</div><div class="field-column"><label>Listener address<input data-config-path="dns_target" value="${escapeHtml(draft?.dns_target ?? "")}"></label><label>Hot reload interval (ms)<input type="number" min="1" data-config-path="hotreload_conf.poll_interval_ms" data-value-type="number" value="${draft?.hotreload_conf.poll_interval_ms ?? 1000}"></label></div></div>
+    <div class="card split-form" data-settings-metrics><div class="section-label span-2"><strong>Metrics and history</strong><span>Dashboard counters and stored queries</span></div><div class="option-column">${checkField("Metrics endpoint", "metric_conf.enable", draft?.metric_conf.enable)}${checkField("Record query history", "record_history", draft?.record_history)}</div><div class="field-column metrics-fields"><label>Metrics output<select data-config-path="metric_conf.report_type"><option value="log" ${draft?.metric_conf.report_type === "log" ? "selected" : ""}>Log</option><option value="http" ${draft?.metric_conf.report_type === "http" ? "selected" : ""}>HTTP</option></select></label><label>Metrics interval (seconds)<input type="number" min="1" data-config-path="metric_conf.report_interval" data-value-type="number" value="${draft?.metric_conf.report_interval ?? 30}"></label></div><div class="field-column history-fields span-2"><label>History matched domains<textarea data-config-path="record_history_conf.matched_list" data-value-type="lines">${escapeHtml(history?.matched_list.join("\n") ?? "")}</textarea></label><label>History line retention<input type="number" min="1" data-config-path="record_history_conf.lines" data-value-type="number" value="${history?.lines ?? 1000}"></label></div></div>
+    <div class="card split-form" data-settings-obfs><div class="section-label span-2"><strong>Obfuscated listener</strong><span>Optional listener and access keys</span></div><div class="option-column">${checkField("Enable obfuscation", "obfs_conf.enable", obfs?.enable)}<div class="key-tools"><span class="muted">Keys</span><button class="button" data-action="generate-obfs-secret">Generate obfuscation key</button></div>${(obfs?.keys ?? []).map((key, index) => `<div class="secret-line"><span>${state.revealedSecrets[key] ? escapeHtml(state.revealedSecrets[key]) : "••••••••••••"}</span><div class="row-actions">${iconAction(state.revealedSecrets[key] ? "eye-off" : "eye", `Reveal obfuscation key ${index + 1}`, "reveal-obfs-secret", `data-index="${index}"`)}${iconAction("trash-2", `Delete obfuscation key ${index + 1}`, "delete-obfs-secret", `data-index="${index}"`)}</div></div>`).join("")}</div><div class="field-column"><label>Bind address<input data-config-path="obfs_conf.bind_addr" value="${escapeHtml(obfs?.bind_addr ?? "")}"></label></div></div>
+    <div class="card compact-card service-card" data-settings-service><div class="section-heading"><div><p class="eyebrow">Service</p><h2>${title(state.app.service)}</h2></div><div class="toolbar service-actions"><button class="button" data-action="service-action" data-service-action="restart">Restart</button><button class="button" data-action="service-action" data-service-action="repair">Repair</button><button class="button danger-button" data-action="service-action" data-service-action="uninstall">Uninstall</button></div></div></div>
+    <details class="card advanced-settings" data-settings-advanced ${state.advancedOpen ? "open" : ""}><summary><span class="advanced-summary-title"><small class="eyebrow">Advanced</small><strong>Raw TOML</strong></span><span class="badge">${state.rawError ? "Invalid" : "Validated on import"}</span><i class="details-chevron" data-lucide="chevron-down"></i></summary><div class="advanced-body"><textarea aria-label="Raw TOML" data-raw-toml data-focus="raw-toml" placeholder="Load or paste TOML">${escapeHtml(state.rawToml)}</textarea>${state.rawError ? `<p class="field-error" role="alert">${escapeHtml(state.rawError)}</p>` : ""}<div class="toolbar config-actions"><button class="button" data-action="load-raw">Load draft</button><button class="button primary" data-action="validate-raw">Validate and use</button><label class="button">Import<input class="sr-only" type="file" accept=".toml,text/plain" data-config-import></label><button class="button" data-action="export-safe">Export safely</button><button class="button danger-button" data-action="export-plaintext">Export plaintext…</button></div></div></details>
   </section>`;
 }
 

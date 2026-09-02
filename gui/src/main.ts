@@ -35,7 +35,7 @@ try {
     activityFilter: "",
     activityPaused: false,
     rawToml: "",
-    fixtureState: "normal",
+    advancedOpen: false,
   });
   store.subscribe((state) => render(root, state));
   bindEvents(root, backend, store);

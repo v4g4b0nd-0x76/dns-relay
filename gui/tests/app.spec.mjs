@@ -427,6 +427,38 @@ test("settings groups keep switches and text fields aligned", async ({ page }) =
   await expect(page.locator("[data-settings-metrics] .field-column input, [data-settings-metrics] .field-column select, [data-settings-metrics] .field-column textarea")).toHaveCount(4);
 });
 
+test("settings hides developer fixtures and collapses Raw TOML", async ({ page }) => {
+  await openApp(page, 1024, 768);
+  await page.locator("[data-target='settings']").click();
+
+  await expect(page.getByText("Shared states", { exact: true })).toHaveCount(0);
+  const advanced = page.locator("[data-settings-advanced]");
+  expect(await advanced.evaluate((element) => ({ tag: element.tagName, open: element.open ?? false })))
+    .toEqual({ tag: "DETAILS", open: false });
+  await expect(page.getByLabel("Raw TOML")).not.toBeVisible();
+  await advanced.locator("summary").click();
+  await expect(page.getByLabel("Raw TOML")).toBeVisible();
+});
+
+test("settings service actions share one bounded row", async ({ page }) => {
+  await openApp(page, 1024, 768);
+  await page.locator("[data-target='settings']").click();
+
+  const layout = await page.locator("[data-settings-service]").evaluate((card) => {
+    const title = card.querySelector(".section-heading > div").getBoundingClientRect();
+    const actions = card.querySelector(".service-actions").getBoundingClientRect();
+    const bounds = card.getBoundingClientRect();
+    return {
+      height: bounds.height,
+      rowGap: Math.abs((actions.top + actions.height / 2) - (title.top + title.height / 2)),
+      rightInset: bounds.right - actions.right,
+    };
+  });
+  expect(layout.height).toBeLessThan(100);
+  expect(layout.rowGap).toBeLessThan(8);
+  expect(layout.rightInset).toBeGreaterThanOrEqual(12);
+});
+
 test("settings lower utility cards use compact desktop spacing", async ({ page }) => {
   await openApp(page, 1440, 900);
   await page.locator("[data-target='settings']").click();
@@ -435,28 +467,25 @@ test("settings lower utility cards use compact desktop spacing", async ({ page }
   const layout = await page.evaluate(() => {
     const obfs = document.querySelector("[data-settings-obfs]").getBoundingClientRect();
     const service = document.querySelector("[data-settings-service]").getBoundingClientRect();
-    const shared = document.querySelector("[data-settings-shared]").getBoundingClientRect();
     const advanced = document.querySelector("[data-settings-advanced]").getBoundingClientRect();
     const keyLabel = document.querySelector("[data-settings-obfs] .key-tools .muted").getBoundingClientRect();
     const keyButton = document.querySelector("[data-action='generate-obfs-secret']").getBoundingClientRect();
     return {
-      advancedGap: advanced.top - Math.max(service.bottom, shared.bottom),
+      advancedGap: advanced.top - service.bottom,
       obfsGap: service.top - obfs.bottom,
-      sameRow: Math.abs(service.top - shared.top),
       keyAligned: Math.abs(keyLabel.top - keyButton.top),
       serviceHeight: service.height,
-      sharedHeight: shared.height,
+      advancedHeight: advanced.height,
     };
   });
 
-  expect(layout.obfsGap).toBeGreaterThanOrEqual(10);
-  expect(layout.obfsGap).toBeLessThanOrEqual(14);
-  expect(layout.sameRow).toBeLessThan(2);
-  expect(layout.advancedGap).toBeGreaterThanOrEqual(10);
-  expect(layout.advancedGap).toBeLessThanOrEqual(14);
+  expect(layout.obfsGap).toBeGreaterThanOrEqual(14);
+  expect(layout.obfsGap).toBeLessThanOrEqual(18);
+  expect(layout.advancedGap).toBeGreaterThanOrEqual(14);
+  expect(layout.advancedGap).toBeLessThanOrEqual(18);
   expect(layout.keyAligned).toBeLessThan(8);
-  expect(layout.serviceHeight).toBeLessThan(150);
-  expect(layout.sharedHeight).toBeLessThan(150);
+  expect(layout.serviceHeight).toBeLessThan(100);
+  expect(layout.advancedHeight).toBeLessThan(80);
 });
 
 test("settings metrics history fields avoid a blank left column", async ({ page }) => {
@@ -486,22 +515,16 @@ test("settings metrics history fields avoid a blank left column", async ({ page 
 test("settings action buttons do not crowd their fields", async ({ page }) => {
   await openApp(page, 1440, 900);
   await page.locator("[data-target='settings']").click();
+  await page.locator("[data-settings-advanced] summary").click();
 
   const layout = await page.evaluate(() => {
-    const serviceTitle = document.querySelector("[data-settings-service] h2").getBoundingClientRect();
-    const serviceButtons = document.querySelector("[data-settings-service] .service-actions").getBoundingClientRect();
-    const firstServiceButton = document.querySelector("[data-settings-service] .service-actions .button").getBoundingClientRect();
     const raw = document.querySelector("[data-settings-advanced] textarea").getBoundingClientRect();
     const rawButtons = document.querySelector("[data-settings-advanced] .config-actions").getBoundingClientRect();
     return {
-      serviceIndent: firstServiceButton.left - serviceTitle.left,
-      serviceGap: serviceButtons.top - serviceTitle.bottom,
       rawGap: rawButtons.top - raw.bottom,
     };
   });
 
-  expect(Math.abs(layout.serviceIndent)).toBeLessThan(4);
-  expect(layout.serviceGap).toBeGreaterThanOrEqual(8);
   expect(layout.rawGap).toBeGreaterThanOrEqual(10);
 });
 
@@ -679,6 +702,7 @@ test("replacing one shared generated reference keeps the other live", async ({ p
   await page.getByRole("button", { name: "Add relay" }).click();
   await page.getByRole("button", { name: "Generate key" }).click();
   await page.locator("[data-target='settings']").click();
+  await page.locator("[data-settings-advanced] summary").click();
   await page.getByLabel("Raw TOML").fill("fixture_duplicate_generated_secret = true");
   await page.getByRole("button", { name: "Validate and use" }).click();
   await page.locator("[data-target='relay']").click();
@@ -722,6 +746,7 @@ test("activity sources filter, pause, export, and clear independently", async ({
 test("raw TOML validation and secret-free export remain explicit", async ({ page }) => {
   await openApp(page);
   await page.locator("[data-target='settings']").click();
+  await page.locator("[data-settings-advanced] summary").click();
   await page.getByRole("button", { name: "Load draft" }).click();
   await expect(page.getByLabel("Raw TOML")).toContainText("dns_target");
   await page.getByLabel("Raw TOML").fill("invalid = true");

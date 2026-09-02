@@ -24,8 +24,7 @@
 .view > .card,
 .view > .metrics,
 .view > .button,
-.view > .muted,
-.view > .settings-grid {
+.view > .muted {
   margin: 0;
 }
 
@@ -438,17 +437,6 @@
   padding: 14px 16px;
 }
 
-.settings-grid {
-  align-items: start;
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(390px, .95fr) minmax(0, 1.05fr);
-}
-
-.settings-grid .card {
-  margin-top: 0;
-}
-
 .compact-card .section-heading,
 .compact-card .toolbar {
   margin-bottom: 0;
@@ -459,17 +447,12 @@
   gap: 12px;
 }
 
-.compact-card .section-heading > .service-actions {
-  flex-basis: 100%;
-  margin-top: 8px;
-}
-
 .service-actions {
   justify-content: flex-start;
 }
 
 .settings-view .config-actions {
-  margin-top: 10px;
+  margin: 0;
 }
 
 .settings-view [data-raw-toml] {
@@ -480,8 +463,48 @@
   grid-template-columns: minmax(0, 1fr) minmax(220px, .5fr);
 }
 
-.settings-view .fixture {
-  min-height: 56px;
+.advanced-settings {
+  overflow: hidden;
+}
+
+.advanced-settings summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 18px;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.advanced-settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-summary-title {
+  display: grid;
+  gap: 2px;
+}
+
+.advanced-summary-title .eyebrow {
+  margin: 0;
+}
+
+.details-chevron {
+  width: 18px;
+  height: 18px;
+  transition: transform .16s ease;
+}
+
+.advanced-settings[open] .details-chevron {
+  transform: rotate(180deg);
+}
+
+.advanced-body {
+  display: grid;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  margin-top: 14px;
 }
 
 .key-tools {
@@ -561,12 +584,19 @@
     gap: 14px;
   }
 
-  .settings-grid {
-    grid-template-columns: 1fr;
+  .service-card .section-heading {
+    display: grid;
   }
 
-  .settings-grid .span-2 {
-    grid-column: auto;
+  .service-card .service-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .service-card .service-actions .button {
+    min-width: 0;
+    padding-inline: 8px;
   }
 
   .history-fields {

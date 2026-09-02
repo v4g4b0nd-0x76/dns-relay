@@ -20,7 +20,7 @@ export interface ShellState {
   activityPaused: boolean;
   rawToml: string;
   rawError?: string;
-  fixtureState: "normal" | "loading" | "empty" | "warning" | "error";
+  advancedOpen: boolean;
 }
 
 export function createStore(initial: ShellState) {

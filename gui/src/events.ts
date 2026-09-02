@@ -14,7 +14,6 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
     if (!button) return;
     const action = button.dataset.action;
     if (action === "navigate") store.update((state) => { state.activeView = (button.dataset.viewTarget ?? button.dataset.target) as ViewId; });
-    if (action === "fixture-state") store.update((state) => { state.fixtureState = button.dataset.state as typeof state.fixtureState; });
     if (action === "toggle-service") await toggleService();
     if (action === "service-action") await runServiceAction(button.dataset.serviceAction as "restart" | "repair" | "uninstall");
     if (action === "revert") await revert();
@@ -69,6 +68,13 @@ export function bindEvents(root: HTMLElement, backend: Backend, store: Store) {
 
   root.addEventListener("close", (event) => {
     if ((event.target as HTMLElement).matches("[data-rule-dialog], [data-relay-key-dialog]")) dialogTrigger?.focus();
+  }, true);
+
+  root.addEventListener("toggle", (event) => {
+    const details = event.target as HTMLDetailsElement;
+    if (details.matches("[data-settings-advanced]")) {
+      store.update((state) => { state.advancedOpen = details.open; });
+    }
   }, true);
 
   async function toggleService() {
