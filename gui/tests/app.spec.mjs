@@ -293,6 +293,13 @@ test("dashboard activity preview stays compact", async ({ page }) => {
   expect(preview.height).toBeLessThan(180);
 });
 
+test("dashboard activity preview shows recent activity", async ({ page }) => {
+  await openApp(page, 1440);
+
+  await expect(page.locator("[data-dashboard-activity]")).toContainText("blocked tracker.example");
+  await expect(page.locator("[data-dashboard-activity]")).not.toContainText("No recent events");
+});
+
 test("dashboard metric row stays separated from activity preview", async ({ page }) => {
   await openApp(page, 1440);
 
@@ -334,6 +341,62 @@ test("settings groups keep switches and text fields aligned", async ({ page }) =
   await expect(page.locator("[data-settings-core] .field-column input")).toHaveCount(2);
   await expect(page.locator("[data-settings-metrics] .option-column .check-row")).toHaveCount(2);
   await expect(page.locator("[data-settings-metrics] .field-column input, [data-settings-metrics] .field-column select, [data-settings-metrics] .field-column textarea")).toHaveCount(4);
+});
+
+test("settings lower utility cards use compact desktop spacing", async ({ page }) => {
+  await openApp(page, 1440, 900);
+  await page.locator("[data-target='settings']").click();
+
+  await expect(page.locator("[data-settings-obfs] .key-tools")).toBeVisible();
+  const layout = await page.evaluate(() => {
+    const obfs = document.querySelector("[data-settings-obfs]").getBoundingClientRect();
+    const service = document.querySelector("[data-settings-service]").getBoundingClientRect();
+    const shared = document.querySelector("[data-settings-shared]").getBoundingClientRect();
+    const advanced = document.querySelector("[data-settings-advanced]").getBoundingClientRect();
+    const keyLabel = document.querySelector("[data-settings-obfs] .key-tools .muted").getBoundingClientRect();
+    const keyButton = document.querySelector("[data-action='generate-obfs-secret']").getBoundingClientRect();
+    return {
+      advancedGap: advanced.top - Math.max(service.bottom, shared.bottom),
+      obfsGap: service.top - obfs.bottom,
+      sameRow: Math.abs(service.top - shared.top),
+      keyAligned: Math.abs(keyLabel.top - keyButton.top),
+      serviceHeight: service.height,
+      sharedHeight: shared.height,
+    };
+  });
+
+  expect(layout.obfsGap).toBeGreaterThanOrEqual(10);
+  expect(layout.obfsGap).toBeLessThanOrEqual(14);
+  expect(layout.sameRow).toBeLessThan(2);
+  expect(layout.advancedGap).toBeGreaterThanOrEqual(10);
+  expect(layout.advancedGap).toBeLessThanOrEqual(14);
+  expect(layout.keyAligned).toBeLessThan(8);
+  expect(layout.serviceHeight).toBeLessThan(112);
+  expect(layout.sharedHeight).toBeLessThan(150);
+});
+
+test("settings metrics history fields avoid a blank left column", async ({ page }) => {
+  await openApp(page, 1440, 900);
+  await page.locator("[data-target='settings']").click();
+
+  await expect(page.locator("[data-settings-metrics] .history-fields")).toBeVisible();
+  const layout = await page.evaluate(() => {
+    const card = document.querySelector("[data-settings-metrics]").getBoundingClientRect();
+    const history = document.querySelector("[data-settings-metrics] .history-fields").getBoundingClientRect();
+    const options = document.querySelector("[data-settings-metrics] .option-column").getBoundingClientRect();
+    const fields = document.querySelector("[data-settings-metrics] .metrics-fields").getBoundingClientRect();
+    return {
+      startsAtCardLeft: Math.abs(history.left - (card.left + 16)),
+      spansMostOfCard: history.width / (card.width - 32),
+      firstRowAligned: Math.abs(options.top - fields.top),
+      firstRowHeightGap: Math.abs(options.height - fields.height),
+    };
+  });
+
+  expect(layout.startsAtCardLeft).toBeLessThan(2);
+  expect(layout.spansMostOfCard).toBeGreaterThan(.95);
+  expect(layout.firstRowAligned).toBeLessThan(2);
+  expect(layout.firstRowHeightGap).toBeLessThan(24);
 });
 
 test("production service control reports its final state", async ({ page }) => {
