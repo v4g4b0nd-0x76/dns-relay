@@ -371,7 +371,7 @@ test("settings lower utility cards use compact desktop spacing", async ({ page }
   expect(layout.advancedGap).toBeGreaterThanOrEqual(10);
   expect(layout.advancedGap).toBeLessThanOrEqual(14);
   expect(layout.keyAligned).toBeLessThan(8);
-  expect(layout.serviceHeight).toBeLessThan(112);
+  expect(layout.serviceHeight).toBeLessThan(150);
   expect(layout.sharedHeight).toBeLessThan(150);
 });
 
@@ -397,6 +397,28 @@ test("settings metrics history fields avoid a blank left column", async ({ page 
   expect(layout.spansMostOfCard).toBeGreaterThan(.95);
   expect(layout.firstRowAligned).toBeLessThan(2);
   expect(layout.firstRowHeightGap).toBeLessThan(24);
+});
+
+test("settings action buttons do not crowd their fields", async ({ page }) => {
+  await openApp(page, 1440, 900);
+  await page.locator("[data-target='settings']").click();
+
+  const layout = await page.evaluate(() => {
+    const serviceTitle = document.querySelector("[data-settings-service] h2").getBoundingClientRect();
+    const serviceButtons = document.querySelector("[data-settings-service] .service-actions").getBoundingClientRect();
+    const firstServiceButton = document.querySelector("[data-settings-service] .service-actions .button").getBoundingClientRect();
+    const raw = document.querySelector("[data-settings-advanced] textarea").getBoundingClientRect();
+    const rawButtons = document.querySelector("[data-settings-advanced] .config-actions").getBoundingClientRect();
+    return {
+      serviceIndent: firstServiceButton.left - serviceTitle.left,
+      serviceGap: serviceButtons.top - serviceTitle.bottom,
+      rawGap: rawButtons.top - raw.bottom,
+    };
+  });
+
+  expect(Math.abs(layout.serviceIndent)).toBeLessThan(4);
+  expect(layout.serviceGap).toBeGreaterThanOrEqual(8);
+  expect(layout.rawGap).toBeGreaterThanOrEqual(10);
 });
 
 test("production service control reports its final state", async ({ page }) => {
