@@ -5,6 +5,30 @@
   height: 100%;
 }
 
+.app-shell {
+  max-width: 1200px;
+}
+
+.view-host {
+  padding: 22px 24px 84px;
+}
+
+.view {
+  display: grid;
+  gap: 16px;
+  width: min(100%, 1040px);
+}
+
+.page-heading,
+.toolbar,
+.view > .card,
+.view > .metrics,
+.view > .button,
+.view > .muted,
+.view > .settings-grid {
+  margin: 0;
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -302,11 +326,6 @@
   justify-content: center;
 }
 
-.settings-view > .card + .card,
-.settings-view > .settings-grid {
-  margin-top: 12px;
-}
-
 .settings-view .card {
   padding: 14px 16px;
 }
@@ -371,6 +390,14 @@
 }
 
 @media (max-width: 759px) {
+  .view-host {
+    padding: 16px 16px 88px;
+  }
+
+  .view {
+    gap: 14px;
+  }
+
   .primary-nav {
     flex: none;
   }
@@ -407,6 +434,6 @@
 
 @media (min-width: 760px) {
   .view-host {
-    padding-bottom: 72px;
+    padding-bottom: 84px;
   }
 }

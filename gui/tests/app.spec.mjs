@@ -121,14 +121,40 @@ test("production shell exposes the six operational views", async ({ page }) => {
   await expect(page.locator("[data-view='settings']")).toBeVisible();
 });
 
-test("desktop shell keeps the compact screenshot frame", async ({ page }) => {
+test("desktop shell uses the available workspace without stretching indefinitely", async ({ page }) => {
   await openApp(page, 1440);
   const shell = await page.locator("[data-app-shell]").boundingBox();
 
   expect(shell).not.toBeNull();
-  expect(shell.width).toBeLessThanOrEqual(1100);
+  expect(shell.width).toBeGreaterThanOrEqual(1180);
+  expect(shell.width).toBeLessThanOrEqual(1200);
   expect(Math.abs(shell.x - (1440 - shell.width) / 2)).toBeLessThan(2);
 });
+
+test("production pages use one spacing rhythm", async ({ page }) => {
+  await openApp(page, 1024, 768);
+  for (const view of ["dashboard", "resolvers", "rules", "relay", "activity", "settings"]) {
+    await page.locator(`[data-target='${view}']`).click();
+    const layout = await page.locator(`[data-view='${view}']`).evaluate((node) => {
+      const style = getComputedStyle(node);
+      return { display: style.display, gap: Number.parseFloat(style.rowGap) };
+    });
+    expect(layout.display).toBe("grid");
+    expect(layout.gap).toBeGreaterThanOrEqual(14);
+    expect(layout.gap).toBeLessThanOrEqual(18);
+  }
+});
+
+for (const width of [390, 420, 760, 1024, 1440]) {
+  test(`production pages have no horizontal overflow at ${width}px`, async ({ page }) => {
+    await openApp(page, width, 768);
+    for (const view of ["dashboard", "resolvers", "rules", "relay", "activity", "settings"]) {
+      await page.locator(`[data-target='${view}']`).click();
+      const overflow = await page.locator("[data-view-host]").evaluate((host) => host.scrollWidth - host.clientWidth);
+      expect(overflow).toBeLessThanOrEqual(1);
+    }
+  });
+}
 
 test("dashboard fits the default desktop height without initial scrolling", async ({ page }) => {
   await openApp(page, 1024);
