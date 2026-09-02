@@ -75,15 +75,25 @@ impl LinuxServiceManager {
         )
     }
 
-    pub fn journal_command(&self) -> CommandSpec {
-        CommandSpec::new(JOURNALCTL, ["-u", SERVICE, "-n", "80", "--no-pager"])
+    pub fn journal_command(&self, limit: usize) -> CommandSpec {
+        CommandSpec::new(
+            JOURNALCTL,
+            vec![
+                "-u".to_string(),
+                SERVICE.to_string(),
+                "-n".to_string(),
+                limit.to_string(),
+                "--no-pager".to_string(),
+                "--output=cat".to_string(),
+            ],
+        )
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn diagnostics(&self) -> Option<String> {
         linux_service_diagnostics(
             &command_output(&self.show_command()),
-            &command_output(&self.journal_command()),
+            &command_output(&self.journal_command(80)),
         )
     }
 

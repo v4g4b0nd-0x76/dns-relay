@@ -4,7 +4,7 @@ use tempfile::tempdir;
 use crate::{
     commands::{
         CommandError, ServiceAction, ServiceState, bundled_paths_from_exe,
-        config_change_requires_restart, ensure_installation_current_from_paths,
+        config_change_requires_restart, ensure_installation_current_from_paths, latest_lines,
         materialize_for_apply, migrate_legacy_secrets, parse_config, read_bounded_lines,
         store_relay_key, validate_draft,
     },
@@ -239,6 +239,14 @@ fn activity_reader_returns_only_the_latest_bounded_lines() {
 
     assert_eq!(
         read_bounded_lines(&[first, second], 3).unwrap(),
+        ["two", "three", "four"]
+    );
+}
+
+#[test]
+fn journal_activity_returns_only_the_latest_bounded_lines() {
+    assert_eq!(
+        latest_lines(b"one\ntwo\nthree\nfour\n", 3),
         ["two", "three", "four"]
     );
 }

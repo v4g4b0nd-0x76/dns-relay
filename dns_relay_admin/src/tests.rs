@@ -120,10 +120,17 @@ fn linux_systemctl_commands_are_closed_and_exact() {
         )
     );
     assert_eq!(
-        linux.journal_command(),
+        linux.journal_command(17),
         CommandSpec::new(
             "/usr/bin/journalctl",
-            ["-u", "dns-relay-gui.service", "-n", "80", "--no-pager"]
+            [
+                "-u",
+                "dns-relay-gui.service",
+                "-n",
+                "17",
+                "--no-pager",
+                "--output=cat",
+            ]
         )
     );
 }

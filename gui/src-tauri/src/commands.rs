@@ -413,6 +413,14 @@ pub async fn test_relay(relay_url: String) -> Result<ProbeResult, CommandError> 
 pub fn read_logs(limit: u16) -> Result<Vec<String>, CommandError> {
     validate_limit(limit)?;
     let paths = PlatformPaths::current().map_err(admin_error)?;
+    #[cfg(target_os = "linux")]
+    {
+        use dns_relay_admin::platform::linux::LinuxServiceManager;
+
+        let command = LinuxServiceManager::new(paths).journal_command(usize::from(limit));
+        return read_command_lines(&command, usize::from(limit));
+    }
+    #[cfg(not(target_os = "linux"))]
     read_bounded_lines(
         &[
             paths.logs.join("dns-relay.out.log"),
@@ -1132,6 +1140,38 @@ fn secret_id_from_reference(reference: &str) -> Result<SecretId, CommandError> {
 }
 
 const MAX_ACTIVITY_BYTES: u64 = 256 * 1024;
+
+#[cfg(target_os = "linux")]
+fn read_command_lines(command: &CommandSpec, limit: usize) -> Result<Vec<String>, CommandError> {
+    let output = Command::new(&command.program)
+        .args(&command.args)
+        .output()
+        .map_err(|error| CommandError::new("activity_unavailable", error.to_string()))?;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(CommandError::new(
+            "activity_unavailable",
+            if error.is_empty() {
+                format!("journalctl failed with {}", output.status)
+            } else {
+                error
+            },
+        ));
+    }
+    Ok(latest_lines(&output.stdout, limit))
+}
+
+pub(crate) fn latest_lines(content: &[u8], limit: usize) -> Vec<String> {
+    let content = String::from_utf8_lossy(content);
+    let mut lines = content
+        .lines()
+        .rev()
+        .take(limit)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    lines.reverse();
+    lines
+}
 
 pub(crate) fn read_bounded_lines(
     paths: &[PathBuf],
