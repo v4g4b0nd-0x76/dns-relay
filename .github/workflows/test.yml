@@ -13,7 +13,8 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -39,29 +40,31 @@ jobs:
             xdg-utils
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: gui/package-lock.json
 
-      - name: Cache cargo
+      - name: Cache Cargo registry
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
 
       - name: Install GUI dependencies
         working-directory: gui
         run: npm ci
 
-      - name: Check formatting
+      - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
       - name: Test Rust workspace
         run: cargo test --workspace
 
-      - name: Clippy
+      - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test GUI frontend
+      - name: Test GUI
         working-directory: gui
         run: npm test
 
