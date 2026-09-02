@@ -184,10 +184,11 @@ function renderRules(state: ShellState) {
       return { kind: "redirect", domain: entry.slice(0, split), target: entry.slice(split + 1), index };
     }),
   ];
+  const addRule = '<button class="button primary" data-action="open-dialog"><i data-lucide="plus"></i> Add rule</button>';
   return `<section class="view" data-view="rules">${heading("Policy", "Rules", `${drops.length} drop · ${redirects.length} redirect`)}
-    <div class="toolbar"><button class="button primary" data-action="open-dialog"><i data-lucide="plus"></i> Add rule</button><label class="button">Import blocklist<input class="sr-only" type="file" accept="text/plain" data-blocklist-import></label></div>
-    <div class="card${rows.length ? "" : " empty-card"}">${rows.length ? rows.map((rule) => `<div class="row"><span class="badge transport">${rule.kind === "drop" ? "DROP" : "DNS"}</span><div class="row-main"><strong>${escapeHtml(rule.domain)}</strong><span>${escapeHtml(rule.target)}</span></div><div class="row-actions">${iconAction("settings", `Edit ${rule.domain}`, "edit-rule", `data-kind="${rule.kind}" data-index="${rule.index}"`)}${iconAction("trash-2", `Delete ${rule.domain}`, "delete-rule", `data-kind="${rule.kind}" data-index="${rule.index}"`)}</div></div>`).join("") : emptyState("shield-ban", "No rules yet", "Add a drop or redirect rule, or import a plain-text blocklist.")}</div>
-    <p class="muted">Drop lists may be imported. Redirect rules remain inline-only.</p>
+    <div class="toolbar rules-toolbar">${rows.length ? addRule : ""}<label class="button">Import blocklist<input class="sr-only" type="file" accept="text/plain" data-blocklist-import></label></div>
+    <div class="card${rows.length ? "" : " empty-card"}">${rows.length ? rows.map((rule) => `<div class="row"><span class="badge transport">${rule.kind === "drop" ? "DROP" : "DNS"}</span><div class="row-main"><strong>${escapeHtml(rule.domain)}</strong><span>${escapeHtml(rule.target)}</span></div><div class="row-actions">${iconAction("settings", `Edit ${rule.domain}`, "edit-rule", `data-kind="${rule.kind}" data-index="${rule.index}"`)}${iconAction("trash-2", `Delete ${rule.domain}`, "delete-rule", `data-kind="${rule.kind}" data-index="${rule.index}"`)}</div></div>`).join("") : emptyState("shield-ban", "No rules yet", "Add a drop or redirect rule, or import a plain-text blocklist.", addRule)}</div>
+    <p class="muted rules-note">Drop lists may be imported. Redirect rules remain inline-only.</p>
   </section>`;
 }
 

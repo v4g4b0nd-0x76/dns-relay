@@ -288,6 +288,13 @@ test("compact empty cards do not double their padding", async ({ page }) => {
   await expect(page.locator(".empty-card")).toHaveCSS("padding", "0px");
 });
 
+test("empty rules keeps one primary add action inside the empty state", async ({ page }) => {
+  await openApp(page, 420, 720);
+  await page.locator("[data-target='rules']").click();
+  await expect(page.getByRole("button", { name: "Add rule" })).toHaveCount(1);
+  await expect(page.locator(".empty-state").getByRole("button", { name: "Add rule" })).toBeVisible();
+});
+
 test("compact relay action stays above the bottom navigation", async ({ page }) => {
   await openApp(page, 420, 690);
   await page.locator("[data-target='relay']").click();

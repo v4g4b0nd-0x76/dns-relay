@@ -356,6 +356,15 @@
   width: auto;
 }
 
+.rules-toolbar {
+  justify-content: flex-start;
+}
+
+.rules-note {
+  margin: -4px 0 0;
+  font-size: 12px;
+}
+
 .card + .button {
   margin-top: 12px;
 }
