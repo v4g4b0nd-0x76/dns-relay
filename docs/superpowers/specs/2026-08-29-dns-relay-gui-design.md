@@ -157,12 +157,13 @@ Running. Read operations must remain useful when elevation is unavailable.
 
 The default window is 420 by 720 pixels with the native OS title bar. It uses:
 
-- Charcoal background and off-white text.
-- Teal for running/healthy state.
-- Coral for stopped/error state.
-- Amber for warnings and pending changes.
-- No gradients, decorative blobs, oversized marketing typography, or nested
-  cards.
+- Kuro Nezumi ink and ash-gray surfaces with warm paper text.
+- Moss for running/healthy state and signal red for actions and selection.
+- Alert red for stopped/error state and brass for warnings and pending changes.
+- The app mark is the Kuro Nezumi macOS Ghostty icon supplied from
+  `assets/icons/macos/ghostty.icns` in the Kuro Nezumi project.
+- No gradients in the application chrome, decorative blobs, oversized
+  marketing typography, or nested cards.
 - Cards and framed controls with at most an 8 px radius.
 - Stable control dimensions that do not shift with dynamic labels or metrics.
 

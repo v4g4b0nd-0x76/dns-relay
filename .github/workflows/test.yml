@@ -1,21 +1,115 @@
 name: Test
+
 on:
   push:
   pull_request:
+
 permissions:
   contents: read
+
 jobs:
   test:
     name: Test workspace
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Cache cargo
+
+      - name: Install Linux GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            libglib2.0-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            pkg-config \
+            wget \
+            xdg-utils
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      # Do not cache target/.
+      # Native Rust build artifacts can depend on the glibc version
+      # of the runner that originally compiled them.
+      - name: Cache Cargo registry
         uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
-      - run: cargo test --workspace
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+        with:
+          cache-targets: false
+
+      - name: Install GUI dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      # Tauri validates externalBin while compiling dns_relay_gui.
+      # Therefore the sidecars MUST exist before cargo test/clippy.
+      - name: Build and stage Tauri sidecars
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          TARGET="x86_64-unknown-linux-gnu"
+          SIDECAR_DIR="gui/src-tauri/binaries"
+
+          mkdir -p "$SIDECAR_DIR"
+
+          cargo build \
+            --package dns_relay \
+            --bin dns_relay \
+            --target "$TARGET"
+
+          cargo build \
+            --package dns_relay_admin \
+            --bin dns_relay_admin \
+            --target "$TARGET"
+
+          cp \
+            "target/${TARGET}/debug/dns_relay" \
+            "${SIDECAR_DIR}/dns_relay-${TARGET}"
+
+          cp \
+            "target/${TARGET}/debug/dns_relay_admin" \
+            "${SIDECAR_DIR}/dns_relay_admin-${TARGET}"
+
+          chmod +x \
+            "${SIDECAR_DIR}/dns_relay-${TARGET}" \
+            "${SIDECAR_DIR}/dns_relay_admin-${TARGET}"
+
+          ls -lah "$SIDECAR_DIR"
+
+      - name: Test Rust workspace
+        run: cargo test --workspace
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test GUI frontend
+        working-directory: gui
+        run: npm test
+
+      - name: Build GUI frontend
+        working-directory: gui
+        run: npm run build
+
+      - name: Test Tauri GUI
+        run: make gui-linux-test

@@ -1,7 +1,7 @@
 use crate::ResponseCache;
 use crate::errors::Error;
 use crate::resolver::is_secure_resolver;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use shared::metric_wrapper::MetricConf;
 use shared::{
     dns::{Ipv4Subnet, parse_public_ipv4_subnet},
@@ -12,17 +12,25 @@ use std::time::SystemTime;
 use std::{path::PathBuf, sync::RwLock};
 use tokio::time::{Duration, MissedTickBehavior, interval};
 
-#[derive(Default, Deserialize, Clone)]
+#[derive(Default, Deserialize, Serialize, Clone)]
 pub struct Conf {
     #[serde(default = "default_dns_target")]
     pub dns_target: String,
     pub drop_list: Vec<String>,
-    #[serde(deserialize_with = "shared::deserialize_redirect_list")]
+    #[serde(
+        deserialize_with = "shared::deserialize_redirect_list",
+        serialize_with = "shared::serialize_redirect_list"
+    )]
     pub redirect_list: Vec<(String, String)>,
     pub resolvers: Vec<String>,
     #[serde(default)]
     pub secure_only: bool,
-    #[serde(default, deserialize_with = "deserialize_client_subnet")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_client_subnet",
+        serialize_with = "serialize_client_subnet",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub client_subnet: Option<Ipv4Subnet>,
     #[serde(default)]
     pub resolver_searching: ResolverSearchingConf,
@@ -38,13 +46,13 @@ pub struct Conf {
     pub init_tls: bool,
     #[serde(default = "default_false")]
     pub record_history: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record_history_conf: Option<RecordHisotryConf>,
     #[serde(default)]
     pub obfs_conf: ObfsConf,
 }
 
-#[derive(Default, Deserialize, Clone)]
+#[derive(Default, Deserialize, Serialize, Clone)]
 pub struct RecordHisotryConf {
     pub matched_list: Vec<String>, // vector of patters to cover like *.google.com or ads.google.com
     pub lines: usize,
@@ -54,7 +62,7 @@ fn default_dns_target() -> String {
     String::from("127.0.0.1:53")
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ObfsConf {
     #[serde(default)]
     pub enable: bool,
@@ -90,7 +98,17 @@ where
         .transpose()
 }
 
-#[derive(Default, Clone, Deserialize)]
+fn serialize_client_subnet<S>(subnet: &Option<Ipv4Subnet>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match subnet {
+        Some([a, b, c]) => serializer.serialize_some(&format!("{a}.{b}.{c}.0/24")),
+        None => serializer.serialize_none(),
+    }
+}
+
+#[derive(Default, Clone, Deserialize, Serialize)]
 pub struct RelayConf {
     pub enable: bool,
     pub resolve_manual: bool,
@@ -102,7 +120,7 @@ fn default_relay_timeout_sec() -> u64 {
     5
 }
 
-#[derive(Default, Clone, Deserialize)]
+#[derive(Default, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelayTransport {
     #[default]
@@ -110,14 +128,14 @@ pub enum RelayTransport {
     GoogleChained,
 }
 
-#[derive(Default, Clone, Deserialize)]
+#[derive(Default, Clone, Deserialize, Serialize)]
 pub struct Relay {
     pub relay_key: String,
     pub relay_url: String,
     pub transport: RelayTransport,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct HotreloadConf {
     pub enable: bool,
     pub poll_interval_ms: u64,
@@ -131,11 +149,11 @@ impl Default for HotreloadConf {
     }
 }
 
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub struct ResolverSearchingConf {
     pub enable: bool,
     pub resolver_source: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resfresh_interval: Option<u64>,
     pub ipv4: bool,
     pub doh: bool,
@@ -149,7 +167,7 @@ pub fn load_conf(path: &PathBuf) -> Result<Conf, Error> {
 }
 
 impl Conf {
-    fn validate(&self) -> Result<(), Error> {
+    pub fn validate(&self) -> Result<(), Error> {
         if !self.secure_only {
             return Ok(());
         }
@@ -179,6 +197,10 @@ impl Conf {
             ));
         }
         Ok(())
+    }
+
+    pub fn to_toml(&self) -> Result<String, Error> {
+        toml::to_string_pretty(self).map_err(|error| Error::Config(error.to_string()))
     }
 }
 

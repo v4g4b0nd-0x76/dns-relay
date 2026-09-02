@@ -95,8 +95,8 @@ enum Commands {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Error> {
-    let _ = init_logger();
     let cli = Cli::parse();
+    let _ = init_logger();
     let command = cli.command.unwrap_or(Commands::Run { background: false });
 
     match command {

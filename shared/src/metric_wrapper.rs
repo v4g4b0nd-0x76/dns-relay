@@ -6,13 +6,13 @@ use std::{
     time::Duration,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     time::interval,
 };
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricReportType {
     #[default]
@@ -20,7 +20,7 @@ pub enum MetricReportType {
     Http,
 }
 
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub struct MetricConf {
     pub enable: bool,
     pub report_type: MetricReportType,
@@ -59,8 +59,8 @@ impl ResolverMetricWrapper {
     }
 }
 
-#[derive(serde::Serialize)]
-struct MetricReport {
+#[derive(Serialize)]
+pub struct MetricReport {
     pub total_req: u64,
     pub resolved_count: u64,
     pub failed_count: u64,
@@ -178,7 +178,7 @@ impl MetricWrapper {
             tracing::warn!("failed to write http response: {}", err);
         }
     }
-    fn prepare_report(&self) -> MetricReport {
+    pub fn prepare_report(&self) -> MetricReport {
         MetricReport {
             total_req: self.total_req.load(Relaxed), // in here we can aquire as well but for sake of performance and non critiality of this  report we dont do it
             resolved_count: self.resolved_count.load(Relaxed),

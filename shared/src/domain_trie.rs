@@ -70,7 +70,7 @@ impl DomainTrie {
 
         let read_list_file = |path: &str| -> Vec<String> {
             match std::fs::read_to_string(path) {
-                Ok(content) => content.lines().filter_map(parse_blocklist_line).collect(),
+                Ok(content) => parse_blocklist(&content),
                 Err(err) => {
                     tracing::error!("failed to read list file {}: {}", path, err);
                     Vec::new()
@@ -264,6 +264,10 @@ fn parse_blocklist_line(raw_line: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+pub fn parse_blocklist(content: &str) -> Vec<String> {
+    content.lines().filter_map(parse_blocklist_line).collect()
 }
 
 fn is_dns_name(name: &str) -> bool {

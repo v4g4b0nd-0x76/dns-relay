@@ -92,6 +92,68 @@ fn load_toml(content: &str) -> Result<Conf, crate::Error> {
 }
 
 #[test]
+fn config_round_trip_preserves_gui_editable_fields() {
+    let original = load_toml(
+        r#"
+dns_target = "127.0.0.1:5353"
+drop_list = ["*.ads.example", "./blocklist.txt"]
+redirect_list = ["internal.example:192.0.2.10,192.0.2.11"]
+resolvers = ["https://dns.google/dns-query"]
+secure_only = true
+client_subnet = "8.8.8.0/24"
+vpn_reassertion = true
+init_tls = true
+record_history = true
+
+[record_history_conf]
+matched_list = ["*.example.com"]
+lines = 4096
+
+[resolver_searching]
+enable = true
+resolver_source = ["https://public-dns.info/nameservers.txt"]
+resfresh_interval = 30
+ipv4 = true
+doh = true
+
+[hotreload_conf]
+enable = true
+poll_interval_ms = 750
+
+[relay_conf]
+enable = true
+resolve_manual = false
+relay_timeout_sec = 7
+
+[[relay_conf.relay_instances]]
+relay_key = "relay-key"
+relay_url = "https://relay.example/dns-query"
+transport = "google_chained"
+
+[metric_conf]
+enable = true
+report_type = "http"
+report_interval = 15
+
+[obfs_conf]
+enable = true
+bind_addr = "127.0.0.1:8853"
+keys = ["obfs-key"]
+"#,
+    )
+    .unwrap();
+
+    let encoded = original.to_toml().unwrap();
+    let decoded: Conf = toml::from_str(&encoded).unwrap();
+
+    assert_eq!(decoded.redirect_list, original.redirect_list);
+    assert_eq!(decoded.resolver_searching.resfresh_interval, Some(30));
+    assert_eq!(decoded.client_subnet, Some([8, 8, 8]));
+    assert_eq!(decoded.relay_conf.relay_instances.len(), 1);
+    assert_eq!(decoded.obfs_conf.keys, vec!["obfs-key"]);
+}
+
+#[test]
 fn secure_config_requires_an_authenticated_path() {
     let error = match load_toml(
         "secure_only = true\nresolvers = ['1.1.1.1:53']\ndrop_list = []\nredirect_list = []",
@@ -925,7 +987,7 @@ async fn auto_flushes_once_capacity_is_reached() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 
     let data = read_history(file.path()).await;

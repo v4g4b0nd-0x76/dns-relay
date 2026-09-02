@@ -1,0 +1,12 @@
+{
+  "identifier": "default",
+  "description": "Minimum DNS Relay desktop permissions",
+  "windows": ["main"],
+  "permissions": [
+    "core:window:default",
+    "core:event:default",
+    "core:tray:default",
+    "dialog:default",
+    "updater:default"
+  ]
+}

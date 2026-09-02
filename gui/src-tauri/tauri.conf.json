@@ -1,0 +1,40 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "DNS Relay",
+  "version": "1.6.10",
+  "identifier": "com.dns-relay.gui",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "DNS Relay",
+        "width": 420,
+        "height": 720,
+        "minWidth": 360,
+        "minHeight": 600,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset:; style-src 'self'; script-src 'self'; connect-src ipc: http://127.0.0.1:5053"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "externalBin": [
+      "binaries/dns_relay",
+      "binaries/dns_relay_admin"
+    ],
+    "icon": [
+      "icons/icon.png"
+    ],
+    "category": "Utility",
+    "shortDescription": "Install and manage the DNS Relay system service"
+  }
+}

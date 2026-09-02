@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <title>DNS Relay</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell" data-app-shell>
+      <header class="app-header">
+        <div class="brand">
+          <img src="assets/app-mark.png" alt="" width="38" height="38">
+          <div><strong>DNS Relay</strong><span>Local control plane</span></div>
+        </div>
+        <span class="status-pill" data-header-state>Running</span>
+      </header>
+
+      <div class="app-layout">
+        <nav class="primary-nav" aria-label="Primary">
+          <button data-view-nav data-no-overlap="dashboard" data-action="navigate" data-target="dashboard"><i data-lucide="gauge"></i><span>Home</span></button>
+          <button data-view-nav data-no-overlap="resolvers" data-action="navigate" data-target="resolvers"><i data-lucide="network"></i><span>Resolvers</span></button>
+          <button data-view-nav data-no-overlap="rules" data-action="navigate" data-target="rules"><i data-lucide="shield-ban"></i><span>Rules</span></button>
+          <button data-view-nav data-no-overlap="relay" data-action="navigate" data-target="relay"><i data-lucide="route"></i><span>Relay</span></button>
+          <button data-view-nav data-no-overlap="activity" data-action="navigate" data-target="activity"><i data-lucide="activity"></i><span>Activity</span></button>
+          <button data-view-nav data-no-overlap="settings" data-action="navigate" data-target="settings"><i data-lucide="settings"></i><span>Settings</span></button>
+        </nav>
+        <main class="view-host" data-view-host></main>
+      </div>
+
+      <section class="dirty-bar" data-dirty-bar hidden aria-label="Unsaved configuration">
+        <span><i data-lucide="circle-dot-dashed"></i> Pending changes</span>
+        <div>
+          <button class="button ghost" data-action="revert">Revert changes</button>
+          <button class="button primary" data-action="apply">Apply changes</button>
+        </div>
+      </section>
+
+      <dialog class="dialog" data-rule-dialog>
+        <form data-rule-form>
+          <div class="section-heading"><div><p class="eyebrow">Rules</p><h2 data-rule-title>Add rule</h2></div><button type="button" class="icon-button" data-icon-only data-action="close-dialog" aria-label="Close rule editor" title="Close rule editor"><i data-lucide="x"></i></button></div>
+          <input type="hidden" name="ruleId">
+          <label>Domain pattern<input name="domain" autocomplete="off" placeholder="ads.example"></label>
+          <label>Rule target<input name="target" autocomplete="off" placeholder="drop or IP address"></label>
+          <p class="field-error" data-rule-error role="alert"></p>
+          <div class="dialog-actions"><button type="button" class="button ghost" data-action="close-dialog">Cancel</button><button class="button primary" type="submit">Save rule</button></div>
+        </form>
+      </dialog>
+
+      <div class="toast" data-toast role="status" hidden></div>
+      <div class="sr-only" data-live-region aria-live="polite"></div>
+    </div>
+    <script src="vendor/lucide.min.js"></script>
+    <script defer src="app.js"></script>
+  </body>
+</html>

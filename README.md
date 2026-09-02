@@ -10,6 +10,7 @@ The current workspace version is **1.6.10** and requires Rust 1.85 or newer.
 | `dns_relay` | Main DNS server and reusable resolver library | [dns_relay/README.md](dns_relay/README.md) |
 | `resolver_proxy` | Local UDP forwarder with optional authenticated obfuscation | [resolver_proxy/README.md](resolver_proxy/README.md) |
 | `dns-relay-shared` | Shared DNS, cache, metrics, rules, network guard, and obfuscation code | Internal workspace crate |
+| `gui` / `dns_relay_gui` | Tauri desktop control plane for installing, configuring, and monitoring `dns_relay` | [DEVELOPER.md](DEVELOPER.md#desktop-gui) |
 
 The normal two-machine deployment is:
 
@@ -44,6 +45,8 @@ cargo test --workspace
 node assets/relay_worker_test.mjs
 ```
 
+For contributor workflow and file ownership, see [DEVELOPER.md](DEVELOPER.md).
+
 Build one release binary with Make:
 
 ```bash
@@ -55,6 +58,27 @@ make build-gnu bin=resolver_proxy
 make build-mac bin=resolver_proxy
 ./scripts/build.sh windows dns_relay
 ./scripts/build.sh windows resolver_proxy
+```
+
+Build and test the desktop GUI:
+
+```bash
+cd gui && npm test
+cd gui && npm run build
+make gui-linux-test
+```
+
+Build and reinstall the desktop GUI for the current platform:
+
+```bash
+make gui-install
+```
+
+On Linux CI or a fresh Linux workstation, install the GUI native headers first:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential libayatana-appindicator3-dev libglib2.0-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev pkg-config
 ```
 
 Run either binary with a config file:
