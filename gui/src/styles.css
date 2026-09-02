@@ -326,6 +326,19 @@
   align-items: start;
 }
 
+.relay-card .section-heading {
+  align-items: start;
+}
+
+.relay-card .secret-line,
+.relay-card .secret-line .row-actions {
+  flex-wrap: wrap;
+}
+
+.relay-card .secret-line .row-actions {
+  justify-content: flex-end;
+}
+
 .section-label {
   display: grid;
   gap: 2px;
@@ -496,6 +509,15 @@
 
   .resolver-toolbar .button {
     align-self: stretch;
+  }
+
+  .relay-card .secret-line {
+    align-items: flex-start;
+  }
+
+  .relay-card .secret-line .row-actions {
+    justify-content: flex-start;
+    width: 100%;
   }
 
   .settings-grid {

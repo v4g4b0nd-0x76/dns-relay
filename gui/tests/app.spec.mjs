@@ -209,7 +209,7 @@ test("desktop forms use the compact screenshot spacing", async ({ page }) => {
   await openApp(page, 1440);
   await page.locator("[data-target='relay']").click();
 
-  const spacing = await page.locator("[data-view='relay'] .card.form-grid").first().evaluate((card) => {
+  const spacing = await page.locator("[data-view='relay'] .relay-settings").evaluate((card) => {
     const cardStyle = getComputedStyle(card);
     const formStyle = getComputedStyle(card);
     return {
@@ -225,6 +225,17 @@ test("desktop forms use the compact screenshot spacing", async ({ page }) => {
   expect(spacing.rowGap).toBeLessThanOrEqual(14);
   expect(spacing.columnGap).toBeGreaterThanOrEqual(10);
   expect(spacing.columnGap).toBeLessThanOrEqual(14);
+});
+
+test("relay settings separate switches from text fields on desktop", async ({ page }) => {
+  await openApp(page, 1024, 768);
+  await page.locator("[data-target='relay']").click();
+  const layout = await page.locator(".relay-settings").evaluate((card) => ({
+    columns: getComputedStyle(card).gridTemplateColumns.split(" ").length,
+    toggles: card.querySelectorAll(".option-column .check-row").length,
+    fields: card.querySelectorAll(".field-column input").length,
+  }));
+  expect(layout).toEqual({ columns: 2, toggles: 2, fields: 2 });
 });
 
 test("compact dashboard keeps flat cards and the horizontal service summary", async ({ page }) => {
