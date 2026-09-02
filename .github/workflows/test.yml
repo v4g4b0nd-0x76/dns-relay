@@ -46,6 +46,9 @@ jobs:
           cache: npm
           cache-dependency-path: gui/package-lock.json
 
+      # Do not cache target/.
+      # Native Rust build artifacts can depend on the glibc version
+      # of the runner that originally compiled them.
       - name: Cache Cargo registry
         uses: Swatinem/rust-cache@v2
         with:
@@ -58,13 +61,49 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
+      # Tauri validates externalBin while compiling dns_relay_gui.
+      # Therefore the sidecars MUST exist before cargo test/clippy.
+      - name: Build and stage Tauri sidecars
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          TARGET="x86_64-unknown-linux-gnu"
+          SIDECAR_DIR="gui/src-tauri/binaries"
+
+          mkdir -p "$SIDECAR_DIR"
+
+          cargo build \
+            --package dns_relay \
+            --bin dns_relay \
+            --target "$TARGET"
+
+          cargo build \
+            --package dns_relay_admin \
+            --bin dns_relay_admin \
+            --target "$TARGET"
+
+          cp \
+            "target/${TARGET}/debug/dns_relay" \
+            "${SIDECAR_DIR}/dns_relay-${TARGET}"
+
+          cp \
+            "target/${TARGET}/debug/dns_relay_admin" \
+            "${SIDECAR_DIR}/dns_relay_admin-${TARGET}"
+
+          chmod +x \
+            "${SIDECAR_DIR}/dns_relay-${TARGET}" \
+            "${SIDECAR_DIR}/dns_relay_admin-${TARGET}"
+
+          ls -lah "$SIDECAR_DIR"
+
       - name: Test Rust workspace
         run: cargo test --workspace
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test GUI
+      - name: Test GUI frontend
         working-directory: gui
         run: npm test
 
